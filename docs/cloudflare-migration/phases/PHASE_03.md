@@ -94,3 +94,39 @@ Run 45652711692 auth-core job 139341166727: 2/3 passed, signed end-to-end test r
 
 ## Hotfix 001 and parity follow-up
 Run 45653122116 (2986f262) auth-core 139342589675 SUCCESS 6/6, including PHASE3_AUTH_CORE, PHASE3_BROWSER_VIRTUAL_PASSKEY, PHASE3_UPSTREAM_AUTH_DIFFERENTIAL, PHASE3_AUTH_FAULT_ROLLBACK. GNU time log user 17.85s/system 3.32s/wall 53.34s/max RSS 312360 KiB/39%/exit 0. Local aggregate only. POC and storage jobs passed; latest full CI still pending. Added safe stable origin-mismatch code and expected origin using upstream isMisconfigured (generic error avoids reflecting arbitrary credential details), unhealthy health JSON on missing secret, expanded actual Node differential for passkey list/add/rename/remove and device-link options/verify. Exact full payload parity is not claimed for random fields/times and documented safety deviations. Retest pending; no physical passkey, hosted or Phase 4 evidence.
+
+## Phase 3 implementation validation snapshot — 2026-11-25
+
+Status: IMPLEMENTED CANDIDATE / OPEN FOR VALIDATION. Do not start Phase 4.
+- Initial code d1382609, run 45652581816 completed SUCCESS for the four existing jobs only (no auth job in that commit).
+- 41509513 run 45652711692 auth-core 2/3, failure was revoked cross-origin native PUT 403 vs expected 401; POC/storage/API passed. a902d747 run 45653016329 auth-core 5/6, browser virtual, upstream HTTP differential, SQLite fault tests all passed; same pre-hotfix 403/401 failure.
+- 2986f262 Hotfix 001 run 45653122116 auth-core 6/6 PASS; log markers PHASE3_AUTH_CORE, PHASE3_BROWSER_VIRTUAL_PASSKEY, PHASE3_UPSTREAM_AUTH_DIFFERENTIAL, PHASE3_AUTH_FAULT_ROLLBACK PASS. POC/storage/API passed. Artifact 15042145310 independently unzipped and read: SHA-256 d1b59ba954ad408e6530a7566ab36e9f72acd478c18ef906fccf50d32bd6bfbd; user CPU 17.85s, system 3.32s, elapsed 53.34s, max RSS 312360 KiB, CPU 39%, exit 0.
+- eb674d32 (activity, stricter bootstrap/CSRF) run 45653369301 auth-core 139343464290 SUCCESS 7/7, all four markers PASS, zero failures/skips/cancellations. POC/storage/API SUCCESS, frontend still running at inspection. Artifact 15040059139 independently unzipped and read: SHA-256 05000c3a9c7cf6ae33b836ad23689b193936ae1dc5c3ee8c14755bac48c40b1e; user CPU 13.87s, system 2.79s, elapsed 55.13s, max RSS 315564 KiB, CPU 30%, exit 0. Measures command/children including Chrome, not per-request workerd CPU or hosted memory/billing. No controlled performance comparison.
+- Latest code edac5325 expands actual upstream differential for passkey list/add/rename/remove/device link and safe stable origin-mismatch errors. Run [45653658471](https://github.com/nimblelancer/openGym/actions/runs/45653658471) POC/storage PASS, auth-core/API/frontend still running at inspection. No final green claim. No further code changes in this documentation commit.
+- Existing 170-operation OpenAPI inventory, 25 core candidates, 145 deferred. Actual core client call-site mapping recorded; individual deferred module callers/compatibility to review before release. Auth coordinator local-only, no fixture/debug routes, no remote bindings or deployment. Single-owner one-shot setup remains closed after deletion; exact recovery/rebootstrap procedure intentionally not yet implemented (Phase 6), add second passkey/device-link while signed in. Local global/owner fixed rate buckets, no reliable remote source IP in loopback; hosted abuse/IP policy still open. Deliberate deviations from upstream: required UV, strict duplicate/mixed cookie handling, reject legacy kindless sessions, strict local/native CORS allowlist, 401 before CSRF on unauthenticated protected routes, sanitized crypto error messages, explicit depth/size bounds, no live restore. No weaker crypto or fake success.
+
+| ID | Prior evidence and remaining gate | Status at snapshot |
+|---|---|---|
+| P3-01 | 170 route inventory and core callers documented; deferred module individual callers not fully reviewed | PARTIAL |
+| P3-02 | isolated local API, no fixture routes, missing secret 503 | PRIOR PASS, final retest |
+| P3-03 | bootstrap race exactly one owner, restart, closed after delete; explicit unsupported auth schema/rotation integration test still open | PARTIAL |
+| P3-04 | signed synthetic and actual Chrome virtual registration/login/cookie PASS; physical passkey manual acceptance open | LOCAL VIRTUAL PASS / MANUAL OPEN |
+| P3-05 | expiry/replay/wrong origin/RP/UV/signature tested, wrong-purpose route cross-use needs explicit coverage; stable error retest | PARTIAL |
+| P3-06 | concurrent nonzero counter assertions exactly one success; bootstrap uniqueness | PRIOR PASS |
+| P3-07 | HMAC/tampering/expiry/kind, duplicate/mixed, disabled, HTTPS flags unit tested; no hosted HTTPS | PRIOR PASS LOCAL |
+| P3-08 | add/list/rename/remove, last-way-in, device-link single-use local PASS; expanded upstream differential pending | PRIOR PASS |
+| P3-09 | step-up, one-live pair, expiration, racing redeem, global throttle tested; hosted source limits not verified | PRIOR PASS LOCAL |
+| P3-10 | aged synthetic signed bearer renewal, kind c cannot renew/delete, restart | PRIOR PASS |
+| P3-11 | ordinary logout browser, logout/all revocation and pending link/pair cancellation | PRIOR PASS |
+| P3-12 | hostile origin/sibling cookie, native preflight, no credential CORS; encoded/normalized path cases need explicit expansion | PARTIAL |
+| P3-13 | health/config/unknown/disabled/fixture paths checked; new unhealthy health JSON retest pending | PRIOR PASS |
+| P3-14 | protected data/rev, 409, identity ignores client profile selector, restart | PRIOR PASS |
+| P3-15 | race logout vs state write, post-revoke 401, offline SQLite trigger failure rollback | PRIOR PASS |
+| P3-16 | delete confirmation/proof/kind, rollback, offline row verification and closed bootstrap | PRIOR PASS |
+| P3-17 | nudge actual upstream functions, activity heartbeat/hidden/expiry unit and runtime, actual caller verified | PRIOR PASS |
+| P3-18 | actual upstream Node differential core subset passes, expanded passkey lifecycle parity latest pending | PARTIAL |
+| P3-19 | local limits, code-only audit, aggregate profiling artifact verified; hosted/per-request/source policy open | LOCAL EVIDENCE / PARTIAL |
+| P3-20 | latest all 5 jobs not completed | OPEN |
+| P3-21 | no production or main merge, owner acceptance and physical browser evidence open | OPEN |
+
+All PRIOR PASS entries require final-code review. No Phase 3 closure, no Phase 4, no Cloudflare remote resources, no real personal data or Learning Hub changes. Future manual physical passkey test must use disposable local profile and separate authenticator entry; official installed mobile app end-to-end remains Phase 4.
