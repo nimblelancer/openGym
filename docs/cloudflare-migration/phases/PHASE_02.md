@@ -2,7 +2,7 @@
 
 Date: 2026-11-25. Upstream baseline: e4a68a94c42a3c17cbd560d66ce2e46a7048ab99 (v1.4.5).
 Phase 1 code baseline: 17404f1ad3bd8edfa914e93a7de6f12ba4f339e0. Branch feat/cloudflare-migration.
-Status: PLANNED, NOT STARTED. Prerequisites: final locked-install run 45648776762 all jobs green, review local measurement limitations, document Phase 1 closure, obtain explicit approval to implement. No remote resources or production data.
+Status: PLANNED, NOT STARTED. Final locked-install run 45648776762 is SUCCESS; Phase 1 local functional POC is closed. Dedicated local CPU/peak-memory qualification remains OPEN (carry forward to P2-16; hosted measurements Phase 7). Explicit user approval to implement Phase 2 is still required. No remote resources or production data.
 
 ## 1. Objective and non-goals
 Replace the synthetic POC state operations with a reusable asynchronous storage layer and upstream-compatible state transition core. Preserve the upstream JSON document semantics, revisions, write ids, deletions, reset markers, unknown fields and offline merge. Keep Docker upstream unchanged. Test in local workerd with disposable data only.
@@ -63,3 +63,6 @@ Stop on lost acknowledged writes, corrupt state returned as empty, failed atomic
 
 ## 7. Expected deliverables
 Storage contract and schema docs, state transition and codec modules, local DO adapter, differential/transaction/import fixtures and tests, CI evidence and updated PROGRESS / VALIDATION_MATRIX / phase report. This file is a plan, not implementation. All P2 acceptance checks NOT RUN.
+
+## Phase 1 handoff
+Final tested code baseline remains 17404f1ad3bd8edfa914e93a7de6f12ba4f339e0. Subsequent commits are documentation only. Local functional closure does not waive performance qualification: explicitly attempt CPU and peak-memory measurement in P2-16, record measurement scope/tooling limitations, and keep hosted validation as a blocking release gate. All P2 implementation and tests remain NOT RUN.

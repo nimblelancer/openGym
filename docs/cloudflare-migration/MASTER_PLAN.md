@@ -1,7 +1,7 @@
 # openGym Cloudflare migration — master plan
 
 Date: 2026-11-25. Baseline: e4a68a94c42a3c17cbd560d66ce2e46a7048ab99 (v1.4.5). Branch: feat/cloudflare-migration.
-Status: Phase 1 local POC passed on Hotfix 001; final locked-install CI still in progress at latest review. Phase 1 remains open. Phase 2 detailed plan prepared, not implemented. No production approval.
+Status: Phase 1 CLOSED for local functional POC only (final locked-install CI 45648776762 SUCCESS); CPU/peak-memory qualification remains open. Phase 2 plan ready, implementation NOT STARTED. No production approval.
 
 ## Goals
 - Run a private, single-owner openGym deployment within the Cloudflare Free plan and the account's remaining quotas.
@@ -33,3 +33,6 @@ No safe atomic persistence, official app incompatible, free-tier CPU or asset li
 
 ## Phase 2 plan
 See [PHASE_02.md](phases/PHASE_02.md). Begin only after Phase 1 closure and explicit implementation approval. Actual hosted CPU/memory and quota remain Phase 7 staging gates; local wall time is not CPU profiling.
+
+## Phase 1 scope closure
+The final local functional gate is satisfied on run 45648776762. The original CPU/memory measurement requirement has not been fully satisfied: only wall-clock latency was measured; dedicated local CPU/peak-memory profiling is carried forward to Phase 2 P2-16, hosted CPU/memory/quota qualification remains Phase 7. This scoped closure is not production feasibility approval. See phases/PHASE_01.md and VALIDATION_MATRIX.md for exact evidence.
