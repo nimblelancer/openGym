@@ -17,6 +17,16 @@ export class AuthRepo{
       this.q('CREATE TABLE IF NOT EXISTS auth_limits (bucket TEXT PRIMARY KEY, window INTEGER NOT NULL, count INTEGER NOT NULL)');
       this.q('CREATE TABLE IF NOT EXISTS auth_audit (id INTEGER PRIMARY KEY, event TEXT NOT NULL, at INTEGER NOT NULL)');
       if(!v)this.q('INSERT INTO auth_version VALUES(1,1,0)');
+      // Key identity is a domain-separated MAC, not the secret. On rotation, invalidate
+      // every pending proof/code and session atomically. Existing credentials/state survive.
+      this.q('CREATE TABLE IF NOT EXISTS auth_key_epoch (id INTEGER PRIMARY KEY CHECK(id=1), fingerprint TEXT NOT NULL)');
+      const fingerprint=mac(c.secret,'opengym-local-auth-key-epoch-v1');
+      const previous=this.one('SELECT fingerprint FROM auth_key_epoch WHERE id=1');
+      if(!previous||!equal(previous.fingerprint,fingerprint)){
+        this.q('DELETE FROM auth_challenges');this.q('DELETE FROM auth_codes');
+        if(v)this.q('UPDATE auth_users SET sv=sv+1');
+        this.q('INSERT OR REPLACE INTO auth_key_epoch VALUES(1,?)',fingerprint);
+      }
     });
   }
   q(s,...args){return this.sql.exec(s,...args).toArray();}

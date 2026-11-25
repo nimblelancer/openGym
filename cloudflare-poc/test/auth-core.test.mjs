@@ -79,6 +79,13 @@ test('local signed WebAuthn: bootstrap race, management, pairing, revocation and
     assert.deepEqual(logins.map(x=>x.status).sort(),[200,400]);
     const list=bodyOf(await call('/api/account/passkeys','GET',undefined,h));assert.equal(list.lastWayIn,true);assert.equal(list.passkeys.length,1);assert.equal(Object.hasOwn(list.passkeys[0],'publicKey'),false);
     assert.equal((await call('/api/account/passkeys?id='+list.passkeys[0].id,'DELETE',{},h)).data.code,'last-way-in');
+    // A registration challenge must never become a login or step-up assertion.
+    const wrongPurpose=bodyOf(await post(call,'/api/account/passkeys/options',await ownerProof(),h));
+    const wrong=await post(call,'/api/login/verify',{cid:wrongPurpose.cid,credential:owner.login(wrongPurpose.options.challenge,++count)});
+    assert.equal(wrong.data.code,'challenge-expired');
+    assert.equal((await post(call,'/api/account/passkeys/verify',{cid:wrongPurpose.cid,credential:d.register(wrongPurpose.options.challenge)},h)).data.code,'challenge-expired');
+    const loginPurpose=bodyOf(await options());
+    assert.equal((await post(call,'/api/account/passkeys/verify',{cid:loginPurpose.cid,credential:d.register(loginPurpose.options.challenge)},h)).data.code,'challenge-expired');
     const add=bodyOf(await post(call,'/api/account/passkeys/options',await ownerProof(),h));
     const added=bodyOf(await post(call,'/api/account/passkeys/verify',{cid:add.cid,credential:d.register(add.options.challenge),name:'Spare'},h));assert.equal(added.passkeys.length,2);
     const spare=added.passkeys.find(x=>x.id!==list.passkeys[0].id);
@@ -107,6 +114,14 @@ test('local signed WebAuthn: bootstrap race, management, pairing, revocation and
     assert.equal((await post(call,'/api/activity',{active:true})).status,401);
     assert.equal((await post(call,'/api/activity',{active:true,name:'Fixture',setsDone:1},phone)).status,200);
     assert.equal((await post(call,'/api/activity',{active:false,reason:'hidden'},phone)).status,200);
+    // Encoded routes are refused; standard URL dot normalization may occur before the Worker.
+    for(const path of ['/api/%64ata','/api/data%2frev','/api//data','/api/data/','/api/data%5crev','/api/%252e%252e/data']){
+      assert.equal((await call(path,'GET',undefined,h)).status,404,path);
+    }
+    for(const path of ['/api/other/../data','/api/%2e/data']){
+      assert.equal((await call(path)).status,401,path);
+      assert.equal((await call(path,'PUT',{state:{workouts:[]}},{...h,origin:'https://hostile.invalid'})).status,403,path);
+    }
     const state={workouts:[{id:'w',d:'2026-09-01'}],routines:[],_ts:1};
     assert.equal((await call('/api/data','PUT',{baseRev:0,state},{...h,origin:'https://sibling.invalid','sec-fetch-site':'same-site'})).status,403);
     const saved=bodyOf(await call('/api/data','PUT',{baseRev:0,profile:'attacker',state,stamped:true},phone));
@@ -118,11 +133,13 @@ test('local signed WebAuthn: bootstrap race, management, pairing, revocation and
     assert.equal((await call('/api/data','GET',undefined,phone)).data.state.workouts[0].id,'w');
     const pending=bodyOf(await post(call,'/api/pair/create',await ownerProof(),h));
     const pendingLink=bodyOf(await post(call,'/api/account/device-link',await ownerProof(),h));
+    const pendingProof=await ownerProof();
     const latest=bodyOf(await call('/api/data/rev','GET',undefined,phone));
     const [write,logout]=await Promise.all([call('/api/data','PUT',{baseRev:latest.rev,baseWid:latest.wid,state:{...state,notes:'race'},stamped:true},phone),post(call,'/api/logout/all',{},h)]);
     assert.ok([200,401].includes(write.status));assert.equal(logout.status,200);
     assert.equal((await call('/api/data','PUT',{state},phone)).status,401);
     assert.equal((await call('/api/me','GET',undefined,h)).status,401);
+    assert.equal((await post(call,'/api/login/verify',pendingProof)).data.code,'challenge-expired');
     assert.equal((await post(call,'/api/pair/redeem',{code:pending.code})).data.code,'pair-invalid');
     assert.equal((await post(call,'/api/device-link/options',{code:pendingLink.code})).data.code,'link-invalid');
     h=cookieOf(await post(call,'/api/login/verify',await ownerProof()));

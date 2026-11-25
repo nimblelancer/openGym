@@ -33,7 +33,7 @@ export async function localRunner(config='wrangler.jsonc',opts={}) {
       try { const res = await fetch(base + (opts.health||'/__poc/health'), { signal: AbortSignal.timeout(1000) }); if (res.ok || (opts.allowUnavailable&&res.status===503)) return; } catch {}
       await sleep(500);
     }
-    throw new Error('local Worker failed to start: ' + log);
+    throw new Error(opts.privateLogs?'local Worker failed to start (private logs suppressed)':'local Worker failed to start: '+log);
   }
   async function stop() {
     if (!child || child.exitCode !== null || child.signalCode !== null) return;

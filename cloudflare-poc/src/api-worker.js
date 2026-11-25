@@ -75,6 +75,7 @@ export class AuthCoordinator extends DurableObject{
     const c=this.a.take(b.cid);if(c?.kind!=='login')return {error:expired()};
     const cred=this.a.cred(b.credential?.id);if(!cred)return {error:err(404,'unknown passkey, create a profile first','unknown-credential')};
     const user=this.a.user(cred.uid);if(!user||user.disabled)return {error:err(403,'this account has been disabled','disabled')};
+    if(c.uid!==user.id||c.sv!==user.sv)return {error:expired()};
     try{
       const v=await verifyAuthenticationResponse({response:b.credential,expectedChallenge:c.challenge,expectedOrigin:this.c.origin,expectedRPID:this.c.rp,requireUserVerification:true,credential:{id:cred.id,publicKey:Buffer.from(cred.key,'base64url'),counter:cred.counter,transports:JSON.parse(cred.transports)}});
       return v.verified?{cred,user,counter:v.authenticationInfo.newCounter}:{error:err(400,'not verified')};
@@ -114,7 +115,8 @@ export class AuthCoordinator extends DurableObject{
     }
     if(key==='POST /api/login/options'){
       const options=await generateAuthenticationOptions({rpID:c.rp,userVerification:'required',allowCredentials:[]});
-      const cid=a.challenge({kind:'login',challenge:options.challenge});
+      const owner=a.one('SELECT id,sv FROM auth_users LIMIT 1');
+      const cid=a.challenge({kind:'login',challenge:options.challenge,uid:owner?.id||null,sv:owner?.sv??null});
       return cid?ok({cid,options}):err(429,'too many challenges');
     }
     if(key==='POST /api/login/verify'){

@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import {DatabaseSync} from 'node:sqlite';
 import {readdir} from 'node:fs/promises';
 import {join} from 'node:path';
-import {fixture,bodyOf,cookieOf,post} from './auth-test-helpers.mjs';
+import {fixture,bodyOf,cookieOf,post,secret} from './auth-test-helpers.mjs';
 import {authenticator} from './auth-fixture.mjs';
 async function findDb(root){
   for(const entry of await readdir(root,{withFileTypes:true})){
@@ -46,5 +46,36 @@ test('offline SQLite fault injection, expired challenges/codes, disabled account
     await runner.stop();const p=await findDb(runner.dir),db=new DatabaseSync(p);
     try{for(const t of ['auth_users','auth_creds','auth_codes','auth_challenges','profile_state','profile_chunks','corrupt_profiles'])assert.equal(db.prepare('SELECT count(*) AS n FROM '+t).get().n,0,t);assert.equal(db.prepare('SELECT closed FROM auth_version WHERE id=1').get().closed,1);}finally{db.close();}
     console.log('PHASE3_AUTH_FAULT_ROLLBACK PASS');
+  }finally{await runner.cleanup();}
+});
+
+test('auth schema rejection and signing-key rotation preserve state, invalidate proofs and sessions',{timeout:180000},async()=>{
+  let signing=secret();const setup=secret();
+  const {runner,call}=await fixture({allowUnavailable:true,vars:()=>({AUTH_SECRET:signing,SETUP_CODE:setup})});
+  const dev=authenticator({rp:'localhost',origin:runner.origin});let counter=0;
+  const proof=async()=>{const o=bodyOf(await post(call,'/api/login/options'));return {cid:o.cid,credential:dev.login(o.options.challenge,++counter)};};
+  const edit=async fn=>{await runner.stop();const p=await findDb(runner.dir);assert.ok(p);const db=new DatabaseSync(p);try{fn(db);}finally{db.close();}};
+  try{
+    await runner.start();
+    const opts=bodyOf(await post(call,'/api/register/options',{name:'Rotation fixture',code:setup}));
+    let h=cookieOf(await post(call,'/api/register/verify',{cid:opts.cid,credential:dev.register(opts.options.challenge)}));
+    const state={workouts:[],routines:[],notes:'survives rotation'};
+    const saved=bodyOf(await call('/api/data','PUT',{baseRev:0,state,stamped:true},h));
+    const pair=bodyOf(await post(call,'/api/pair/create',await proof(),h));
+    const link=bodyOf(await post(call,'/api/account/device-link',await proof(),h));
+    const pending=await proof();
+    await runner.stop();signing=secret();await runner.start();
+    assert.equal((await call('/api/me','GET',undefined,h)).status,401);
+    assert.equal((await post(call,'/api/login/verify',pending)).data.code,'challenge-expired');
+    assert.equal((await post(call,'/api/pair/redeem',{code:pair.code})).data.code,'pair-invalid');
+    assert.equal((await post(call,'/api/device-link/options',{code:link.code})).data.code,'link-invalid');
+    h=cookieOf(await post(call,'/api/login/verify',await proof()));
+    assert.equal(bodyOf(await call('/api/data','GET',undefined,h)).state.notes,state.notes);
+    assert.equal(bodyOf(await call('/api/data/rev','GET',undefined,h)).wid,saved.wid);
+    await edit(db=>db.exec('UPDATE auth_version SET version=99'));await runner.start();
+    assert.equal((await call('/api/health')).status,503);assert.equal((await call('/api/data','GET',undefined,h)).status,503);
+    await edit(db=>{assert.equal(db.prepare('SELECT version FROM auth_version').get().version,99);db.exec('UPDATE auth_version SET version=1');});
+    await runner.start();assert.equal(bodyOf(await call('/api/data','GET',undefined,h)).state.notes,state.notes);
+    console.log('PHASE3_AUTH_ROTATION_SCHEMA PASS');
   }finally{await runner.cleanup();}
 });
