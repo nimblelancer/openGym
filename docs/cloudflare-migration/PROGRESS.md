@@ -10,3 +10,7 @@
 - Runtime and upstream tests pending: authoring environment cannot resolve GitHub/npm registry. CI outcome must be inspected before declaring Phase 1 PASS. No real cloud resources, deployment, credentials, production API or Learning Hub changes. See phases/PHASE_01.md.
 
 - Review follow-up: isolated HTTP adapter runtime and added CI lockfile/manifest artifacts. CI execution still unverified; no run returned at inspection time.
+
+## Phase 1 CI review / Hotfix 001
+- Run 45646783644: combined POC passed, API/frontend cancelled. Replacement run 45647012258: upstream API 1084/1084 passed; Fetch/DO and state tests passed, isolated HTTP adapter failed startup with Address already in use (socket direct:1:default). Frontend still running at inspection.
+- Serialize test files via --test-concurrency=1, use commit-specific CI concurrency, and add temporary public lockfile log handoff (validated npm registry only, SHA-256 + chunks). Existing lock artifact downloaded and inspected; actual commit pending. New run must verify fix; no deploy or upstream code changes.

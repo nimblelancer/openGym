@@ -13,3 +13,6 @@ Implementation delivered; validation PENDING until CI runs. Authoring container 
 
 ## Review follow-up
 Separated Node HTTP adapter from Fetch/DO runtime into its own Worker and local test. CI pins setup-node to upstream's reviewed revision and publishes generated dependency lockfile and asset manifest as artifacts. No run was listed immediately after implementation commit; fork Actions availability is unconfirmed. No test status upgraded.
+
+## Hotfix 001
+CI run 45647012258 exposes parallel Wrangler internal port collision (not an HTTP API compatibility failure). Run files sequentially; keep adapter and Fetch/DO isolated, and let earlier regression jobs finish when a new commit is pushed. Previous combined POC passed; latest Fetch/DO and 1084 upstream API tests passed. Frontend/asset result pending. Temporary lock evidence script allows exact public npm lockfile retrieval from job logs; remove it once the verified lockfile is tracked. Latest hotfix not yet validated.

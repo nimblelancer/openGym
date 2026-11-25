@@ -7,7 +7,7 @@ on:
 permissions:
   contents: read
 concurrency:
-  group: cloudflare-poc-${{ github.ref }}
+  group: cloudflare-poc-${{ github.ref }}-${{ github.sha }}
   cancel-in-progress: true
 env:
   WRANGLER_SEND_METRICS: 'false'
@@ -27,7 +27,18 @@ jobs:
         with:
           node-version: '26'
       - run: node --test test/state.test.mjs
-      - run: npm install --no-audit --no-fund
+      - name: Install POC dependencies
+        run: |
+          if [ -f package-lock.json ]; then
+            npm ci --no-audit --no-fund
+          else
+            npm install --no-audit --no-fund
+          fi
+      # Temporary text handoff for the public npm lockfile while the GitHub connector
+      # cannot commit a downloaded ZIP directly. Remove after the lockfile is tracked.
+      - name: Record generated lockfile
+        if: ${{ hashFiles('cloudflare-poc/package-lock.json') != '' }}
+        run: node scripts/lock-evidence.mjs
       - run: npm test
       - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f
         if: always()

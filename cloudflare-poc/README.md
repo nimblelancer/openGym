@@ -21,3 +21,5 @@ No media is copied outside openGym. Manifest checks Free limits (20k assets, 25 
 Pinned direct dependencies; lockfile not yet generated because npm network is unavailable in authoring runtime. CI installs exact direct versions and generates local lock; commit verified lockfile before Phase 2. No deploy commands in workflow.
 
 The HTTP adapter is now an isolated worker/config (`wrangler.node.jsonc`) with its own test process, so adapter failure does not prevent the Fetch/DO tests running. CI publishes the generated lockfile and asset manifest as short-lived artifacts. Neither configuration is deployable by project policy.
+
+Test files run sequentially to avoid Wrangler internal direct-socket port contention. CI concurrency is per commit, so follow-up validation does not cancel older regression jobs. If the lockfile is present, CI uses npm ci. The temporary lockfile evidence script only emits a checked public npm dependency lock and is removed after it is tracked.
