@@ -22,7 +22,7 @@ const publicUser=u=>({id:u.id,name:u.name,admin:true,owner:true});
 const text=x=>typeof x==='string'?x:'';
 export default {async fetch(req,env){
   const u=new URL(req.url);
-  if(!['localhost','127.0.0.1'].includes(u.hostname))return Response.json({error:'local only'},{status:403});
+  if(!['localhost','127.0.0.1'].includes(u.hostname))return Response.json({error:'local only'},{status:403,headers:{'Cache-Control':'no-store'}});
   try{return await env.AUTH.get(env.AUTH.idFromName('phase3-local-owner')).fetch(req);}
   catch{return Response.json({error:'service unavailable'},{status:503,headers:{'Cache-Control':'no-store'}});}
 }};
@@ -47,9 +47,9 @@ export class AuthCoordinator extends DurableObject{
       }
       if(!CORE.has(key)||/%|\\/.test(u.pathname))return this.respond(req,err(404,'not found'));
       const s=this.a.session(req);
-      if(!csrf(this.c,req,key,s))return this.respond(req,err(403,'origin mismatch','origin-mismatch'));
       const anonymous=new Set(['GET /api/health','GET /api/config','POST /api/register/options','POST /api/register/verify','POST /api/login/options','POST /api/login/verify','POST /api/pair/redeem','POST /api/device-link/options','POST /api/device-link/verify','POST /api/logout']);
       if(!anonymous.has(key)&&!s)return this.respond(req,denied());
+      if(!csrf(this.c,req,key,s))return this.respond(req,err(403,'origin mismatch','origin-mismatch'));
       // Fixed buckets cannot be expanded by arbitrary client identifiers; global anonymous auth cap,
       // plus a separate authenticated step-up cap. No trusted remote IP in loopback harness.
       if(/\/(register|login|pair|device-link|passkeys)(\/|$)/.test(u.pathname)&&req.method!=='GET'){
