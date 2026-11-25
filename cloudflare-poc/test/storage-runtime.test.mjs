@@ -34,6 +34,9 @@ test('Phase 2 local DO: transactions, actual client merge, corruption, schema, i
     assert.deepEqual(old.state.workouts.map(w=>w.id).sort(),['a','b']);
     assert.equal((await put('alpha',{baseRev:old.rev,baseWid:'stale',state:base})).status,409);
     for(const state of [{},[],{workouts:'x'},{_ts:4}] )assert.equal((await put('alpha',{state})).status,400);
+    const deep={workouts:[]};let ptr=deep;for(let i=0;i<300;i++){ptr.next={};ptr=ptr.next;}
+    assert.equal((await put('alpha',{state:deep})).status,400);
+    assert.deepEqual((await get('alpha')).data,old);
     for(const fault of ['chunk','metadata']){
       assert.equal((await call(route('alpha','fault'),'POST',{fault,body:{baseRev:old.rev,baseWid:old.state._wid,state:{...base,notes:'x'}}})).status,503);
       assert.deepEqual((await get('alpha')).data,old);

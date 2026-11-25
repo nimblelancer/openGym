@@ -8,12 +8,29 @@ export const forClient = s => {
   return rest;
 };
 const bad = error => ({status:400,body:{error}});
+// Explicit safety budget: JSON.stringify stack behavior varies by V8 version.
+// Iterative traversal keeps only one iterator per level, not a stack of all sibling values.
+export const MAX_DEPTH=256;
+export function boundedDepth(root){
+  if(!root||typeof root!=='object')return true;
+  const frames=[Object.values(root)[Symbol.iterator]()];
+  while(frames.length){
+    const {value,done}=frames.at(-1).next();
+    if(done){frames.pop();continue;}
+    if(value&&typeof value==='object'){
+      if(frames.length>=MAX_DEPTH)return false;
+      frames.push(Object.values(value)[Symbol.iterator]());
+    }
+  }
+  return true;
+}
 export function validate(body) {
   if (!record(body)) return bad('invalid json');
   const s = body.state;
   if (!s || typeof s !== 'object') return bad('state required');
   if (!Array.isArray(s) && !Object.keys(s).some(k=>k!=='_rev'&&k!=='_ts')) return bad('state required');
   if (Array.isArray(s) || ['workouts','routines'].some(k=>s[k]!=null&&!Array.isArray(s[k]))) return bad('invalid state');
+  if(!boundedDepth(s))return bad('invalid state');
   return null;
 }
 export function transition(cur,body,{now=Date.now(),wid=()=>randomBytes(8).toString('hex')}={}) {
