@@ -19,3 +19,6 @@ Separate wrangler.storage.jsonc only, loopback, fixed synthetic profile names, e
 
 ## Verified deletion/reset cases and local resource bounds
 Expanded actual upstream differential tests PASS (run 45651255730, 51c7b63a). Covers deletion records across five entity kinds, offline conflict/retry, add-back, named reset with clock-skewed new entry, legacy reset-marker retention, later reset and restart. Local logical budget: <=16 512 KiB chunks plus metadata per profile (8 MiB cap), revision two indexed lookups and no chunk reads, replacement <=16 deletes and <=16 inserts plus metadata before index overhead. This is not hosted billed usage. Local process profiling verified; hosted qualification remains open.
+
+## Final acceptance
+Final run 45651255730 on 51c7b63a completed SUCCESS, 17/17 scoped local criteria accepted. Current storage is a reusable local fixture component, not a production authenticated API. See PHASE_02.md for exact artifacts and remaining hosted/per-request gates. Phase 3 must bind the trusted profile key to verified identity and recheck auth inside mutation transactions; no fixture route in the integrated API.

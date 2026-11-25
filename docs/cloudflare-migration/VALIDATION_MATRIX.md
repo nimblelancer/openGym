@@ -152,3 +152,43 @@ Phase 2 remains OPEN. Do not begin Phase 3 until final CI passes, any remaining 
 | P2-17 | isolation/scope verified; owner acceptance pending | OPEN |
 
 Phase 2 remains OPEN; 15/17 criteria have local evidence, 2 open. Do not propose closure until latest complete CI and explicit owner acceptance. Documentation-only update, runtime code unchanged. 
+
+## Final Phase 2 acceptance — 2026-11-25
+**CLOSED — LOCAL STORAGE MIGRATION ONLY.** Owner explicitly accepted local storage conditionally on full CI passing and no outstanding local blocker in the current request. Conditions met for the documented local scope. Phase 3 plan only; implementation not started or authorized.
+
+Final run [45651255730](https://github.com/nimblelancer/openGym/actions/runs/45651255730), attempt 1, tested commit 51c7b63a4b07c8073a3936099c0809fff0556f99: completed SUCCESS, 4/4 jobs and all recorded steps SUCCESS. Subsequent e64a0ea6 and this closure are documentation-only.
+| Job | Evidence | Result |
+|---|---|---|
+| POC | [139336050905](https://github.com/nimblelancer/openGym/actions/runs/45651255730/job/139336050905): 4/4 plus repeated 2/2 precheck | PASS |
+| Storage | [139336050131](https://github.com/nimblelancer/openGym/actions/runs/45651255730/job/139336050131): 6/6, PHASE2_DIFFERENTIAL_REV 9 10, PHASE2_DELETION_RESET_PARITY PASS | PASS |
+| API baseline | [139336050692](https://github.com/nimblelancer/openGym/actions/runs/45651255730/job/139336050692): 1084/1084 | PASS |
+| Frontend/assets | [139336050605](https://github.com/nimblelancer/openGym/actions/runs/45651255730/job/139336050605): 10101/10101 across 898 files, build 2.05s, media staging and manifest pass | PASS |
+
+Total 11195 main-suite tests, excluding repeated precheck. No failures, skips or cancellations reported in POC/storage/API, frontend 898/898 files and 10101/10101 tests. All three final ZIP artifacts downloaded and independently read in Python:
+- Asset manifest 15041566100: assets.json SHA-256 f7924cac4ae9a010184994febf7360d5e4f3dda98cba7bf57a75d064ef86b4f2; 13345 files, 242978231 bytes, 13109 media entries (6554 stills, 6554 animations, notice), max 2091275 bytes, zero oversized. Identical to Phase 1; no real asset upload.
+- Lockfile 15041480653: package-lock.json SHA-256 3bf5809d991c8c036e1001c4ec7af25bcfecbf0aa9ede2e320591996f2b4fddc; 79766 bytes, lock v3, 156 records, Wrangler 4.168.0, SimpleWebAuthn 13.3.3; computed Git blob SHA-1 0cde099db0392a2583158df6911b3180d20698be matches feature-branch file. All npm ci steps succeeded.
+- Profiling 15040311639: storage-process-profile.txt SHA-256 10d895b569fab82b06095c0fd4bbc4a3e5a2034c6a5fe8bd2a4e16ecf2946bcb; user CPU 5.95s, system 1.24s, wall 18.02s, max RSS 310408 KiB, CPU 39%, exit 0. Matches logs; aggregate process/child measurement, not per-request isolate CPU or billing. Before restart SQL sample 20 meta/18 chunk queries, 51 rows read/49 rows written, 5242180 attempted bytes. Logical resource budget in PHASE_02_STORAGE_CONTRACT.md. 
+- Compared main e4a68a9 to feature HEAD e64a0ea6 via GitHub compare: all 34 changed paths limited to cloudflare-poc/, docs/cloudflare-migration/ and dedicated .github/workflows/cloudflare-poc.yml; no changes to original backend, frontend, Docker, upstream failover or main. No remote Cloudflare operations, actual account data or Learning Hub changes performed.
+
+### Final local acceptance matrix
+| ID | Evidence | Result |
+|---|---|---|
+| P2-01 | SQLite schema init/restart/unknown version rejection | PASS |
+| P2-02 | missing/corrupt/unavailable outcomes; 503 | PASS |
+| P2-03 | Unicode codec/512 KiB chunks/near-5 MiB/8 MiB cap rejection | PASS |
+| P2-04 | stored rev/wid parity; metadata-only polling | PASS |
+| P2-05 | concurrent writes 200/409, actual client merge keeps both edits | PASS |
+| P2-06 | optional/null legacy baseRev and mismatched write ID | PASS |
+| P2-07 | response revision 9 vs persisted 10, wid shape/history, ts | PASS |
+| P2-08 | parser and invalid state/depth protection, no overwrite | PASS |
+| P2-09 | deletion/reset differential marker, add-back, offline clock skew, bookkeeping/unknown fields | PASS |
+| P2-10 | injected chunk/metadata failures roll back | PASS |
+| P2-11 | restart, shrink, corruption/quarantine | PASS |
+| P2-12 | synthetic profile isolation, fixture routes only | PASS |
+| P2-13 | synthetic seed/export/dry-run/idempotency/checksum/no live overwrite | PASS |
+| P2-14 | actual upstream Node differential, reused stamp/merge, documented deviations | PASS |
+| P2-15 | final 4/4 jobs SUCCESS, locked deps, assets and baseline regression | PASS |
+| P2-16 | verified aggregate CPU/RSS artifact, wall/SQL counters and resource bounds | PASS (LOCAL SCOPE) |
+| P2-17 | branch scope checked, owner conditional acceptance now effective | PASS |
+
+17/17 scoped local criteria passed. This supersedes historical pending tables above. Not a full API/security parity or production qualification claim. Phase 1 outstanding local aggregate CPU/RSS evidence has now been collected; per-request workerd CPU/heap remains unmeasured. Hosted CPU/memory/DO duration/row billing/shared quota/R2/asset upload are unresolved Phase 7 release gates. Real browser passkeys and mobile compatibility, account authentication/authorization, live recovery and media remain later phases. Known design deviations: explicit nesting cap 256 and stored-state cap 8 MiB, known corruption 503, no live restore; no truncation. No deploy, production authorization, main merge, or Phase 3 implementation. See PHASE_03.md for proposed plan; separate explicit implementation approval required.
