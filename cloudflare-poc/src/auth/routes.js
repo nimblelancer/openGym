@@ -22,5 +22,6 @@ export const CORE=new Set([
   "GET /api/data",
   "PUT /api/data",
   "GET /api/data/rev",
-  "GET /api/nudge-check"
+  "GET /api/nudge-check",
+  "POST /api/activity"
 ]);

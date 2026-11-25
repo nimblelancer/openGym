@@ -38,6 +38,8 @@ test('actual upstream HTTP differential: auth, config, state, pairing, logout an
     const [nd,wd]=await Promise.all([node('/api/data','GET',undefined,nh),call('/api/data','GET',undefined,wh)]);assert.deepEqual({...nd.data,state:{...nd.data.state,_wid:'wid'}},{...wd.data,state:{...wd.data.state,_wid:'wid'}});
     await compare('/api/nudge-check?date=2026-09-01','GET',undefined,nh,wh);
     await compare('/api/nudge-check?date=bad','GET',undefined,nh,wh);
+    await compare('/api/activity','POST',{active:true,name:'Fixture',setsDone:1},nh,wh);
+    await compare('/api/activity','POST',{active:false,reason:'hidden'},nh,wh);
     await compare('/api/pair/create','POST',{},nh,wh);
     const nproof=async()=>{const o=bodyOf(await post(node,'/api/login/options'));return {cid:o.cid,credential:dev.login(o.options.challenge,++count)};};
     const wproof=async()=>{const o=bodyOf(await post(call,'/api/login/options'));return {cid:o.cid,credential:dev.login(o.options.challenge,++count)};};

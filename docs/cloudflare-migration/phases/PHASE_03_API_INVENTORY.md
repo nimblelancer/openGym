@@ -1,6 +1,6 @@
 # Phase 3 pinned API inventory
 
-170 operations from upstream api/openapi.yaml. 24 implemented candidates (not verified); remaining 146 deferred. No full parity claim. Callers: frontend/src/lib/api.js for auth/pairing; frontend/src/store/useStore.js for state; account settings for passkeys/device-link; native background nudge-check documented in docs/MOBILE.md. Activity deferred: presence is multi-user/admin-related but actual app calls must be checked before Phase 4. Media Phase 5; other modules disabled. Individual caller audit and exact error/shape differential remain pending.
+170 operations from upstream api/openapi.yaml. 25 implemented candidates (not fully verified); remaining 145 deferred. No full parity claim. Callers: frontend/src/lib/api.js for auth/pairing; frontend/src/store/useStore.js for state; account settings for passkeys/device-link; native background nudge-check documented in docs/MOBILE.md. Activity candidate implemented as ephemeral bounded single-owner presence; admin read routes remain deferred. Media Phase 5; other modules disabled. Individual caller audit and exact error/shape differential remain pending.
 
 | Operation | Scope |
 |---|---|
@@ -94,7 +94,7 @@
 | `GET /api/integrations/oauth/start` | Deferred |
 | `GET /api/integrations/oauth/callback` | Deferred |
 | `GET /api/integrations/log` | Deferred |
-| `POST /api/activity` | Deferred |
+| `POST /api/activity` | Phase 3 candidate |
 | `GET /api/admin/users` | Deferred |
 | `GET /api/admin/user` | Deferred |
 | `POST /api/admin/user/disable` | Deferred |
@@ -181,3 +181,6 @@ Auth contract tests now include upstream actual Node HTTP differential subset an
 
 ## Hotfix 001 — revoked bearer status
 Run 45652711692 auth-core job 139341166727: 2/3 passed, signed end-to-end test reached logout/all and then revoked mobile PUT returned 403 rather than expected 401. Protected API now resolves authenticated session and returns 401 before CSRF check when no session acts; authenticated cookie requests still require CSRF checks. Anonymous sign-in routes still require origin checks. This ordering is a deliberate mobile-friendly deviation from upstream's possible 403 on revoked cross-origin bearer. No authentication check weakened. Retest pending. Earlier Phase 1 POC and storage jobs passed on 41509513; previous d1382609 baseline API passed. No production changes.
+
+## Core caller verification
+- frontend/src/lib/api.js lines 275–448: health, pair redeem, config, register/login; native origin and bearer handling. frontend/src/store/useStore.js lines 802–881, 1326–1668, 1774–1890, 2057–2277: state/rev/config/logout/all/delete/me. frontend/src/components/Passkeys.jsx lines 64,121,150,183,202,235,272,322,343: passkey list/rename/delete/add/options, device link, pair create and redeem options/verify. DeleteAccount.jsx line 48: passkey proof list. frontend/src/views/Workout.jsx lines 2670–2706: heartbeat/beacon hidden/navigated activity. docs/MOBILE.md: paired native bearer and nudge-check. Remaining deferred-module individual callers still require inventory review before release; no full parity claim.

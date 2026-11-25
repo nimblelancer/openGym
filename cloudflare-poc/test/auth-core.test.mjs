@@ -1,6 +1,7 @@
 import {test} from 'node:test';
 import assert from 'node:assert/strict';
 import {authenticator} from './auth-fixture.mjs';
+import {Presence} from '../src/auth/presence.js';
 import {config,issue,parse,cookies,TTL,mac} from '../src/auth/session.js';
 import {secret,fixture,bodyOf,cookieOf,post} from './auth-test-helpers.mjs';
 test('session primitives: secret validation, expiry, kind, MAC, HTTPS cookies',()=>{
@@ -12,6 +13,13 @@ test('session primitives: secret validation, expiry, kind, MAC, HTTPS cookies',(
   assert.equal(parse({...c,secret:secret()},t,1001),null);
   assert.match(cookies(c,t)[0],/^__Host-gymsid=.*Path=\/; HttpOnly; Secure; SameSite=Lax$/);
   assert.equal(cookies(c,null).length,2);
+});
+test('presence: heartbeat, hidden grace, expiry, navigate and revoke cleanup',()=>{
+  const p=new Presence();p.update('u',{active:true,name:'x',setsDone:1},1000);assert.equal(p.current('u',1001).setsDone,1);
+  p.update('u',{active:false,reason:'hidden'},2000);p.update('u',{active:false,reason:'hidden'},3000);assert.equal(p.current('u',46999).hiddenAt,2000);assert.equal(p.current('u',47000),null);
+  p.update('u',{active:true},50000);assert.equal(p.current('other',50001),null);assert.equal(p.current('u',120000),null);
+  p.update('u',{active:true},121000);p.update('u',{active:false,reason:'navigated'},122000);assert.equal(p.current('u',122001),null);
+  p.update('u',{active:true},123000);p.clear('u');assert.equal(p.current('u',123001),null);
 });
 test('missing secret fails closed',{timeout:90000},async()=>{
   const {runner,call}=await fixture({allowUnavailable:true,vars:()=>({AUTH_SECRET:''})});
@@ -96,6 +104,9 @@ test('local signed WebAuthn: bootstrap race, management, pairing, revocation and
     const pre=await call('/api/data','OPTIONS',undefined,{origin:'capacitor://localhost','access-control-request-private-network':'true'});
     assert.equal(pre.status,204);assert.equal(pre.headers.get('access-control-allow-credentials'),null);assert.equal(pre.headers.get('access-control-allow-private-network'),'true');
     assert.equal((await call('/api/data','OPTIONS',undefined,{origin:'https://hostile.invalid'})).status,403);
+    assert.equal((await post(call,'/api/activity',{active:true})).status,401);
+    assert.equal((await post(call,'/api/activity',{active:true,name:'Fixture',setsDone:1},phone)).status,200);
+    assert.equal((await post(call,'/api/activity',{active:false,reason:'hidden'},phone)).status,200);
     const state={workouts:[{id:'w',d:'2026-09-01'}],routines:[],_ts:1};
     assert.equal((await call('/api/data','PUT',{baseRev:0,state},{...h,origin:'https://sibling.invalid','sec-fetch-site':'same-site'})).status,403);
     const saved=bodyOf(await call('/api/data','PUT',{baseRev:0,profile:'attacker',state,stamped:true},phone));

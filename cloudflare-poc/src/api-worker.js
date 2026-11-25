@@ -8,6 +8,7 @@ import { readBody,HttpInputError,MAX_BODY } from './storage/codec.js';
 import { validate,transition } from './sync/transition.js';
 import { excusedOn,nudgeFor } from '../../api/nudge.js';
 import { CORE } from './auth/routes.js';
+import { Presence } from './auth/presence.js';
 const result=(status,body,token)=>({status,body,token});
 const ok=(body={ok:true},token)=>result(200,body,token);
 const err=(status,error,code)=>result(status,{error,...(code?{code}:{})});
@@ -27,7 +28,7 @@ export default {async fetch(req,env){
   catch{return Response.json({error:'service unavailable'},{status:503,headers:{'Cache-Control':'no-store'}});}
 }};
 export class AuthCoordinator extends DurableObject{
-  constructor(ctx,env){super(ctx,env);this.c=config(env);this.a=new AuthRepo(ctx.storage,this.c);this.s=new StateStore(ctx.storage);this.storage=ctx.storage;}
+  constructor(ctx,env){super(ctx,env);this.c=config(env);this.a=new AuthRepo(ctx.storage,this.c);this.s=new StateStore(ctx.storage);this.storage=ctx.storage;this.presence=new Presence();}
   respond(req,r){
     const h=cors(this.c,req);h.set('Content-Type','application/json');
     if(r.token!==undefined)for(const c of cookies(this.c,r.token))h.append('Set-Cookie',c);
@@ -49,10 +50,10 @@ export class AuthCoordinator extends DurableObject{
       const s=this.a.session(req);
       const anonymous=new Set(['GET /api/health','GET /api/config','POST /api/register/options','POST /api/register/verify','POST /api/login/options','POST /api/login/verify','POST /api/pair/redeem','POST /api/device-link/options','POST /api/device-link/verify','POST /api/logout']);
       if(!anonymous.has(key)&&!s)return this.respond(req,denied());
-      if(!csrf(this.c,req,key,s))return this.respond(req,err(403,'origin mismatch','origin-mismatch'));
+      if(!csrf(this.c,req,key,s))return this.respond(req,result(403,{error:'cross-origin request refused',code:'origin-mismatch',expected:this.c.origin}));
       // Fixed buckets cannot be expanded by arbitrary client identifiers; global anonymous auth cap,
       // plus a separate authenticated step-up cap. No trusted remote IP in loopback harness.
-      if(/\/(register|login|pair|device-link|passkeys)(\/|$)/.test(u.pathname)&&req.method!=='GET'){
+      if((/\/(register|login|pair|device-link|passkeys)(\/|$)/.test(u.pathname)||key==='POST /api/account/delete')&&req.method!=='GET'){
         const bucket=s?'owner':'anonymous';if(!this.a.throttle(bucket,s?100:60))return this.respond(req,err(429,'too many attempts'));
       }
       const b=['GET','HEAD'].includes(req.method)?{}:await readBody(req,key==='PUT /api/data'?MAX_BODY:64*1024);
@@ -95,13 +96,13 @@ export class AuthCoordinator extends DurableObject{
     if(key==='POST /api/register/options'){
       const name=text(b.name).trim().slice(0,40);if(!name)return err(400,'name required');
       if(!a.open()||!a.setup(text(b.code).trim().toLowerCase()))return invite();
-      return this.registration({id:randomId(12),name,sv:0},'register');
+      return this.registration({id:randomId(12),name,sv:0},'register',{setupDigest:c.setupDigest});
     }
     if(key==='POST /api/register/verify'){
       const ch=a.take(b.cid);if(ch?.kind!=='register')return expired();
       const cred=await this.newCredential(ch,b);if(!cred)return err(400,'passkey verification failed');
       return a.tx(()=>{
-        if(!a.open())return invite();
+        if(!a.open()||ch.setupDigest!==c.setupDigest)return invite();
         if(a.cred(cred.id))return err(409,'credential already registered');
         a.q('INSERT INTO auth_users VALUES(?,?,0,0)',ch.uid,ch.name);
         if(!a.add(ch.uid,cred,b,true))throw Error('credential insert failed');
@@ -124,7 +125,7 @@ export class AuthCoordinator extends DurableObject{
       return ok({user:publicUser(u),...(s.bearer&&s.kind==='b'&&s.exp-Date.now()<TTL/2?{token:issue(c,u,'b')}:{})});
     }
     if(key==='POST /api/logout')return ok({ok:true},null);
-    if(key==='POST /api/logout/all')return a.tx(()=>{const u=live();if(!u)return denied();a.revoke(u);a.audit('logout-all');return ok({ok:true},null);});
+    if(key==='POST /api/logout/all')return a.tx(()=>{const u=live();if(!u)return denied();a.revoke(u);this.presence.clear(u.id);a.audit('logout-all');return ok({ok:true},null);});
     if(key==='POST /api/pair/create'||key==='POST /api/account/device-link'){
       const pair=key.includes('/pair/');
       if(!pair&&a.creds(s.uid).length>=MAX_PASSKEYS)return limit();
@@ -180,11 +181,12 @@ export class AuthCoordinator extends DurableObject{
       const remove=u=>{
         if(!check(u))return err(400,'type the account name to confirm','confirm-name');
         for(const table of ['profile_chunks','profile_state','corrupt_profiles'])a.q('DELETE FROM '+table+' WHERE profile_id=?',u.id);
-        a.q('DELETE FROM auth_creds WHERE uid=?',u.id);a.q('DELETE FROM auth_codes WHERE uid=?',u.id);a.q('DELETE FROM auth_challenges');a.q('DELETE FROM auth_users WHERE id=?',u.id);a.audit('account-delete');return ok({ok:true},null);
+        a.q('DELETE FROM auth_creds WHERE uid=?',u.id);a.q('DELETE FROM auth_codes WHERE uid=?',u.id);a.q('DELETE FROM auth_challenges');a.q('DELETE FROM auth_users WHERE id=?',u.id);a.audit('account-delete');this.presence.clear(u.id);return ok({ok:true},null);
       };
       if(s.bearer&&s.kind==='b')return a.tx(()=>{const u=live();return u?remove(u):denied();});
       return this.step(s,b,remove);
     }
+    if(key==='POST /api/activity'){const u=live();if(!u)return denied();this.presence.update(u.id,b);return ok();}
     if(key==='GET /api/nudge-check'){
       if(!live())return denied();const date=url.searchParams.get('date')||'';
       if(!/^\d{4}-\d{2}-\d{2}$/.test(date)||Number.isNaN(Date.parse(date+'T00:00:00Z')))return err(400,'date must be YYYY-MM-DD','date-invalid');
