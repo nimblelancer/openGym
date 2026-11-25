@@ -22,3 +22,6 @@ Phase 0: STATIC = source inspected; NOT RUN = execution pending. No automated te
 | Release | user signs off, rollback rehearsal, no existing Learning Hub modifications | NOT RUN |
 
 Use targeted Worker integration tests (Wrangler/Miniflare or official Workers Vitest integration) plus upstream tests and differential API fixtures. Local tests do not establish actual hosted CPU/billing; staging after explicit approval is required.
+
+## Phase 1 evidence status
+POC code/test implementation added; all execution checks remain NOT RUN in authoring environment. CI workflow cloudflare-poc.yml is the execution path. Local synthetic auth is not actual browser authentication; local wall timing is not hosted CPU. Require CI evidence, lockfile and review before Phase 2.

@@ -1,0 +1,16 @@
+{
+  "name": "opengym-cloudflare-poc",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "node --test test/*.test.mjs",
+    "dev": "wrangler dev --local --ip 127.0.0.1 --port 8787",
+    "assets": "node scripts/asset-manifest.mjs ../frontend/dist"
+  },
+  "dependencies": {
+    "@simplewebauthn/server": "13.3.3"
+  },
+  "devDependencies": {
+    "wrangler": "4.168.0"
+  }
+}

@@ -1,0 +1,21 @@
+# Phase 1 local-only feasibility harness
+
+**Not a production API.** Never deploy this config, connect the official phone app, enter real personal data, or attach remote resources. No production /api routes, sessions or owner accounts implemented. Existing cloudflare/ is upstream failover and must not be touched.
+
+Run from repo root with Node 26 (upstream CI version):
+```sh
+cd cloudflare-poc
+npm install --no-audit --no-fund
+npm test
+```
+The runtime test starts Wrangler dev with --local, loopback and a disposable persistence directory; shuts down and restarts the same local disk, cleans up. No credentials required. The unit tests need no dependencies (`node --test test/state.test.mjs`). The synthetic P-256 authenticator exercises SimpleWebAuthn registration and signed login including negative challenge/replay; does not prove actual browser or mobile compatibility. The Node adapter tests body, method, URL, headers and multiple cookies, not the original monolithic server. DO transaction test uses 512 KiB chunks to avoid dependence on recent 8 MB SQL row support. The experiment is deliberately stricter about baseRev/baseWid than upstream; production parity is Phase 2. No real auth/security claims for /__poc routes. 
+Local timing is wall time, not hosted CPU. The thin Worker only forwards heavy operations to DO. Real hosted Free-tier CPU/memory, real-browser WebAuthn, and shared account quota remain unverified. Never reduce security or truncate state to fit budget.
+
+Frontend build/manifest (from repo root):
+```sh
+(cd frontend && npm ci --ignore-scripts --no-audit --no-fund && npm run build)
+node scripts/catalogue/stage-media.mjs frontend/dist
+(cd cloudflare-poc && npm run assets)
+```
+No media is copied outside openGym. Manifest checks Free limits (20k assets, 25 MiB per file), not actual deployment. 
+Pinned direct dependencies; lockfile not yet generated because npm network is unavailable in authoring runtime. CI installs exact direct versions and generates local lock; commit verified lockfile before Phase 2. No deploy commands in workflow.

@@ -1,0 +1,66 @@
+name: Cloudflare POC (local only)
+on:
+  push:
+    branches: ['feat/cloudflare-migration']
+    paths: ['cloudflare-poc/**', '.github/workflows/cloudflare-poc.yml', 'api/sync-stamps.js']
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: cloudflare-poc-${{ github.ref }}
+  cancel-in-progress: true
+env:
+  WRANGLER_SEND_METRICS: 'false'
+jobs:
+  poc:
+    if: github.ref == 'refs/heads/feat/cloudflare-migration'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: cloudflare-poc
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v6
+        with:
+          node-version: '26'
+      - run: node --test test/state.test.mjs
+      - run: npm install --no-audit --no-fund
+      - run: npm test
+  upstream-api:
+    if: github.ref == 'refs/heads/feat/cloudflare-migration'
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v6
+        with:
+          node-version: '26'
+      - run: npm ci --omit=optional --no-audit --no-fund
+        working-directory: api
+      - run: npm test
+        working-directory: api
+  frontend-and-assets:
+    if: github.ref == 'refs/heads/feat/cloudflare-migration'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v6
+        with:
+          node-version: '26'
+      - run: npm ci --ignore-scripts --no-audit --no-fund
+        working-directory: frontend
+      - run: npm test
+        working-directory: frontend
+      - run: npm run build
+        working-directory: frontend
+      - run: node scripts/catalogue/stage-media.mjs frontend/dist
+      - run: npm run assets
+        working-directory: cloudflare-poc
