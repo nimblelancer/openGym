@@ -38,7 +38,6 @@ test('offline SQLite fault injection, expired challenges/codes, disabled account
     assert.equal((await call('/api/me','GET',undefined,h)).status,401);
     assert.equal((await post(call,'/api/login/verify',await proof())).status,403);
     await edit(db=>db.exec('UPDATE auth_users SET disabled=0; DELETE FROM auth_limits;'));
-    const fixed=Math.floor(Date.now()/60000);
     // Set the local bucket to its limit; no mass request loop or public endpoint is needed.
     await edit(db=>db.prepare("INSERT OR REPLACE INTO auth_limits VALUES('anonymous',?,60)").run(Math.floor(Date.now()/60000)));
     assert.equal((await post(call,'/api/login/options')).status,429);

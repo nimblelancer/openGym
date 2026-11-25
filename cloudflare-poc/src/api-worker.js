@@ -7,6 +7,7 @@ import { StateStore,stateResponse,revisionResponse } from './storage/store.js';
 import { readBody,HttpInputError,MAX_BODY } from './storage/codec.js';
 import { validate,transition } from './sync/transition.js';
 import { excusedOn,nudgeFor } from '../../api/nudge.js';
+import { isMisconfigured } from '../../api/verify-error.js';
 import { CORE } from './auth/routes.js';
 import { Presence } from './auth/presence.js';
 const result=(status,body,token)=>({status,body,token});
@@ -25,7 +26,7 @@ export default {async fetch(req,env){
   const u=new URL(req.url);
   if(!['localhost','127.0.0.1'].includes(u.hostname))return Response.json({error:'local only'},{status:403,headers:{'Cache-Control':'no-store'}});
   try{return await env.AUTH.get(env.AUTH.idFromName('phase3-local-owner')).fetch(req);}
-  catch{return Response.json({error:'service unavailable'},{status:503,headers:{'Cache-Control':'no-store'}});}
+  catch{return Response.json(req.method==='GET'&&u.pathname==='/api/health'?{ok:false,writable:false}:{error:'service unavailable'},{status:503,headers:{'Cache-Control':'no-store'}});}
 }};
 export class AuthCoordinator extends DurableObject{
   constructor(ctx,env){super(ctx,env);this.c=config(env);this.a=new AuthRepo(ctx.storage,this.c);this.s=new StateStore(ctx.storage);this.storage=ctx.storage;this.presence=new Presence();}
@@ -66,8 +67,9 @@ export class AuthCoordinator extends DurableObject{
     const cid=this.a.challenge({kind,uid:u.id,name:u.name,sv:u.sv,challenge:opts.challenge,...extra});
     return cid?ok({cid,options:opts,...(kind==='link'?{id:u.id,name:u.name}:{})}):err(429,'too many challenges');
   }
+  verificationFailure(e){return isMisconfigured(e)?result(400,{error:'passkey origin or RP ID mismatch',code:'origin-mismatch',expected:this.c.origin}):err(400,'passkey verification failed');}
   async newCredential(c,b){
-    try{const v=await verifyRegistrationResponse({response:b.credential,expectedChallenge:c.challenge,expectedOrigin:this.c.origin,expectedRPID:this.c.rp,requireUserVerification:true});return v.verified?v.registrationInfo.credential:null;}catch{return null;}
+    try{const v=await verifyRegistrationResponse({response:b.credential,expectedChallenge:c.challenge,expectedOrigin:this.c.origin,expectedRPID:this.c.rp,requireUserVerification:true});return v.verified?{credential:v.registrationInfo.credential}:{error:err(400,'not verified')};}catch(e){return {error:this.verificationFailure(e)};}
   }
   async assertion(b){
     const c=this.a.take(b.cid);if(c?.kind!=='login')return {error:expired()};
@@ -76,7 +78,7 @@ export class AuthCoordinator extends DurableObject{
     try{
       const v=await verifyAuthenticationResponse({response:b.credential,expectedChallenge:c.challenge,expectedOrigin:this.c.origin,expectedRPID:this.c.rp,requireUserVerification:true,credential:{id:cred.id,publicKey:Buffer.from(cred.key,'base64url'),counter:cred.counter,transports:JSON.parse(cred.transports)}});
       return v.verified?{cred,user,counter:v.authenticationInfo.newCounter}:{error:err(400,'not verified')};
-    }catch{return {error:err(400,'passkey verification failed')};}
+    }catch(e){return {error:this.verificationFailure(e)};}
   }
   async step(s,b,action){
     if(!b.credential)return err(403,'confirm with your passkey first','passkey-required');
@@ -100,7 +102,7 @@ export class AuthCoordinator extends DurableObject{
     }
     if(key==='POST /api/register/verify'){
       const ch=a.take(b.cid);if(ch?.kind!=='register')return expired();
-      const cred=await this.newCredential(ch,b);if(!cred)return err(400,'passkey verification failed');
+      const checked=await this.newCredential(ch,b);if(checked.error)return checked.error;const cred=checked.credential;
       return a.tx(()=>{
         if(!a.open()||ch.setupDigest!==c.setupDigest)return invite();
         if(a.cred(cred.id))return err(409,'credential already registered');
@@ -149,7 +151,7 @@ export class AuthCoordinator extends DurableObject{
       const link=key.includes('/device-link/'),ch=a.take(b.cid);
       if(!ch||ch.kind!==(link?'link':'add')||(!link&&ch.uid!==s.uid))return expired();
       if(link){const p=a.findCode('link',b.code);if(!p||p.digest!==ch.digest||p.uid!==ch.uid)return invalidLink();}
-      const cred=await this.newCredential(ch,b);if(!cred)return err(400,'passkey verification failed');
+      const checked=await this.newCredential(ch,b);if(checked.error)return checked.error;const cred=checked.credential;
       return a.tx(()=>{
         const u=a.user(ch.uid);if(!u||u.disabled||u.sv!==ch.sv||(!link&&!live()))return denied();
         if(link){const p=a.findCode('link',b.code);if(!p||p.digest!==ch.digest||p.uid!==ch.uid)return invalidLink();}

@@ -23,7 +23,7 @@ test('presence: heartbeat, hidden grace, expiry, navigate and revoke cleanup',()
 });
 test('missing secret fails closed',{timeout:90000},async()=>{
   const {runner,call}=await fixture({allowUnavailable:true,vars:()=>({AUTH_SECRET:''})});
-  try{await runner.start();assert.equal((await call('/api/health')).status,503);assert.equal((await post(call,'/api/login/options')).status,503);}finally{await runner.cleanup();}
+  try{await runner.start();const h=await call('/api/health');assert.equal(h.status,503);assert.deepEqual(h.data,{ok:false,writable:false});assert.equal((await post(call,'/api/login/options')).status,503);}finally{await runner.cleanup();}
 });
 test('local signed WebAuthn: bootstrap race, management, pairing, revocation and authenticated storage',{timeout:180000},async()=>{
   const {runner,call,SETUP_CODE,c}=await fixture();
@@ -63,7 +63,7 @@ test('local signed WebAuthn: bootstrap race, management, pairing, revocation and
     const lo=bodyOf(await options());
     assert.equal((await post(call,'/api/login/verify',{cid:lo.cid,credential:wrongOrigin.login(lo.options.challenge)})).status,404);
     for(const overrides of [{origin:'http://wrong.invalid'},{rp:'wrong.invalid'},{uv:false}]){
-      const o=bodyOf(await options());assert.equal((await post(call,'/api/login/verify',{cid:o.cid,credential:owner.login(o.options.challenge,++count,overrides)})).status,400);
+      const o=bodyOf(await options());const invalid=await post(call,'/api/login/verify',{cid:o.cid,credential:owner.login(o.options.challenge,++count,overrides)});assert.equal(invalid.status,400);if(overrides.origin||overrides.rp){assert.equal(invalid.data.code,'origin-mismatch');assert.equal(invalid.data.expected,runner.origin);}
     }
     const sig=bodyOf(await options()),invalidSig=owner.login(sig.options.challenge,++count);invalidSig.response.signature=Buffer.alloc(64).toString('base64url');
     assert.equal((await post(call,'/api/login/verify',{cid:sig.cid,credential:invalidSig})).status,400);
