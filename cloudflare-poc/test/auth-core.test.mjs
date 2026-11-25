@@ -33,7 +33,9 @@ test('local signed WebAuthn: bootstrap race, management, pairing, revocation and
   const register=()=>post(call,'/api/register/options',{name:'Synthetic Owner',code:SETUP_CODE});
   try{
     await runner.start();
-    assert.deepEqual(bodyOf(await call('/api/health')),{ok:true,users:0,writable:true});
+    const health=await call('/api/health');assert.deepEqual(bodyOf(health),{ok:true,users:0,writable:true});
+    assert.equal(health.headers.get('cache-control'),'no-store');assert.match(health.headers.get('content-type'),/application\/json/);assert.equal(health.headers.get('x-content-type-options'),'nosniff');assert.equal(health.headers.get('vary'),'Origin');
+    assert.equal((await post(call,'/api/login/options',{pad:'x'.repeat(65536)})).status,413);
     assert.deepEqual(bodyOf(await call('/api/config')),{invite_only:true,allow_guest:false,signed_in:false});
     assert.equal((await call('/api/data')).status,401);
     assert.equal((await call('/__storage/alpha/state')).status,404);

@@ -189,3 +189,20 @@ Run 45652711692 auth-core job 139341166727: 2/3 passed, signed end-to-end test r
 Run 45653122116 (2986f262) auth-core 139342589675 SUCCESS 6/6, including PHASE3_AUTH_CORE, PHASE3_BROWSER_VIRTUAL_PASSKEY, PHASE3_UPSTREAM_AUTH_DIFFERENTIAL, PHASE3_AUTH_FAULT_ROLLBACK. GNU time log user 17.85s/system 3.32s/wall 53.34s/max RSS 312360 KiB/39%/exit 0. Local aggregate only. POC and storage jobs passed; latest full CI still pending. Added safe stable origin-mismatch code and expected origin using upstream isMisconfigured (generic error avoids reflecting arbitrary credential details), unhealthy health JSON on missing secret, expanded actual Node differential for passkey list/add/rename/remove and device-link options/verify. Exact full payload parity is not claimed for random fields/times and documented safety deviations. Retest pending; no physical passkey, hosted or Phase 4 evidence.
 
 Latest prior verified run 45653369301 passed 7/7 auth tests including activity and actual Node differential subset. Expanded passkey lifecycle differential is in edac5325; retest pending. Exact upstream diagnostic text intentionally sanitized, stable origin-mismatch code/expected origin retained. All deferred client-call details require release review.
+
+## Deferred module caller audit (pinned upstream)
+| Route family | Confirmed caller source / scope |
+|---|---|
+| password/email | frontend/src/components/PasswordAuth.jsx, frontend/src/lib/api.js; password_login and passkey password capability absent/false. |
+| OIDC | frontend/src/components/OidcAccount.jsx, frontend/src/lib/oidc-app.js; no OIDC capability. |
+| API tokens/calendar | frontend/src/lib/api-tokens.js; settings list/create/revoke and calendar configuration, external token and ICS clients deferred. |
+| Watch | frontend/src/lib/watch-relay.js; link/pair/snapshot/events/ack; watch-side redeem/box deferred. |
+| Media | frontend/src/lib/media-sync.js; missing/upload/download; Phase 5. |
+| Community/shared | frontend/src/lib/shared-api.js; shared config block absent, moderation deferred. |
+| Push | frontend/src/lib/push.js; browser subscription/key/status/test; server push and timer endpoints deferred, native nudge-check remains. |
+| Integrations | frontend/src/lib/integrations.js; server-provider and calendar capability, actual UI review before release. |
+| Coach | frontend/src/lib/coach-api.js, frontend/src/views/AdminCoach.jsx; coach config absent/null, no provider secrets. |
+| Trainer/gym/sharing | frontend/src/lib/trainer-api.js and sharing-api.js; invitations, grants, inbox, gym staff, trainer operations outside single-owner MVP. |
+| Admin | frontend/src/views/Admin.jsx; user/invite/recovery/audit/gym admin UI routes deferred. Owner/admin publicUser upstream parity may expose navigation; Phase 5 UI must suppress or explicitly handle unavailable sections, not fake success. |
+| OAuth/MCP | external discovery/authorization/token operations, no MVP implementation. |
+This verifies core callers and representative deferred families. It is not exhaustive per-operation static call-graph proof. Required release gate: ensure official mobile and web clients do not depend on deferred routes for mandatory functionality. All 145 deferred operations remain explicit JSON 404. No Phase 4 implementation.

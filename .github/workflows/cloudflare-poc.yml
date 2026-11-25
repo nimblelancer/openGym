@@ -78,6 +78,8 @@ jobs:
       - run: npm ci --omit=optional --no-audit --no-fund
         working-directory: api
       - run: google-chrome --version
+      - run: node --check test/manual-passkey.mjs && node --check test/manual-passkey-ui.js
+        working-directory: cloudflare-poc
       - name: Auth local tests and profiling
         working-directory: cloudflare-poc
         run: |

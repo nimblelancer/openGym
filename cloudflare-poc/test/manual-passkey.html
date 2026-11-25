@@ -1,0 +1,8 @@
+<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>openGym disposable passkey acceptance</title>
+<style>body{font:16px system-ui;max-width:720px;margin:40px auto;padding:0 20px;line-height:1.5}button,input{font:inherit;padding:9px;margin:4px}label{display:block}pre{white-space:pre-wrap;background:#eee;color:#222;padding:12px}</style>
+<h1>openGym local passkey acceptance</h1><p>Use a separate browser profile and an actual Windows Hello / platform passkey or security key. No real workout data. This page never prints tokens or credential material.</p>
+<label>Disposable setup code <input id="setup" type="password" autocomplete="off"></label>
+<button id="register">1. Register test owner</button><button id="me">2. Check session</button><button id="write">3. Save synthetic workout</button>
+<button id="logout">4. Logout</button><button id="login">5. Login (or cancel prompt)</button><button id="read">6. Read synthetic workout</button><button id="all">7. Logout everywhere</button><button id="clear">Clear result</button>
+<pre id="status" aria-live="polite">Ready.</pre><script src="/manual-passkey-ui.js" defer></script></html>
