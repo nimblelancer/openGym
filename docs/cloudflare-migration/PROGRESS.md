@@ -95,3 +95,36 @@ Phase 2 remains OPEN. Do not begin Phase 3 until final CI passes, any remaining 
 - Downloaded and independently opened profiling artifact 15040076423: exit 0, user CPU 6.63s, system CPU 1.35s, elapsed 17.77s, max RSS 313904 KiB, 44% CPU. Matches log. GNU time command/children measures, not isolate per-request CPU or Cloudflare billing. SQL sample before restart: 20 metadata queries, 18 chunk queries, 51 rows read, 49 rows written, 5242180 attempted bytes written; after final restart 3 metadata, 1 chunk query, 4 rows read, 0 writes. P2-16 local evidence collected; actual hosted CPU, memory, DO usage and remaining account quota stay Phase 7 gates.
 - Prior runs: 45650324821 POC/API/frontend/assets PASS, storage FAIL fixture; 45650418247 and 45650542950 POC/API PASS, storage 5/6 (deep nesting failure addressed in Hotfix 001); frontend jobs pending at inspection. 
 - Expanded actual pinned Node differential test using real frontend mergeStates/stampChange/resetIdsOf: deletion of workout/routine/weigh-in/measurement/favourite, stale concurrent write and conflict merge preserving an independent new workout/setting, intentional add-back, named reset with backdated new workout, legacy missing reset marker, newer reset, restart and full stored/wire parity. No source logic change. New coverage pending CI; P2-09 not yet accepted. Full final 4-job CI and user acceptance P2-17 pending. No Phase 3/deploy.
+
+## Hotfix 001 final review / expanded coverage validation — 2026-11-25
+
+- [45650632284](https://github.com/nimblelancer/openGym/actions/runs/45650632284), 367425b2: completed SUCCESS, 4/4 jobs. POC 4/4, storage 6/6, API 1084/1084, frontend 10101/10101 (898 files), 11195 main-suite passes, plus repeated 2-test precheck. Build 2.11s, native localization, media staging and asset validation pass. Artifact 15040221578 downloaded and checked: 13345 files, 242978231 bytes, 13109 media entries, largest 2091275 bytes, zero oversized, manifest SHA-256 f7924cac4ae9a010184994febf7360d5e4f3dda98cba7bf57a75d064ef86b4f2 matches Phase 1.
+- All three prior Phase 2 runs 45650324821, 45650418247 and 45650542950 are now completed FAILURE due only to the storage test job; POC/API/frontend-and-assets all succeeded in each. Fixture error corrected, depth guard verified in Hotfix 001.
+- [45651255730](https://github.com/nimblelancer/openGym/actions/runs/45651255730), 51c7b63a: expanded deletion/reset differential suite SUCCESS, 6/6 storage tests, log PHASE2_DELETION_RESET_PARITY PASS. POC job completed SUCCESS. API and frontend-and-assets still IN_PROGRESS at last inspection. Same source implementation as 367425b2; test-only addition + documentation. No additional application hotfix required based on observed results.
+- Expanded parity coverage verifies actual Node server vs Worker wire/full stored document at each write, positive deletion stamps for workout/routine/bodyweight/measurement/favourite, stale write 409, upstream merge preserves independent new workout and setting without resurrecting removed records, negative add-back stamps survive stale delete, named reset wipes only recorded entries and retains a new backdated workout, legacy omitted marker preserved, newer reset wins and restart retains full document. P2-09 PASS for this exercised scope.
+- Profiling artifact 15040311639 downloaded and ZIP member read: user CPU 5.95s, system CPU 1.24s, wall 18.02s, maximum RSS 310408 KiB, CPU 39%, exit 0. Matches successful expanded storage run. Earlier successful artifact 15040076423: user 6.63s/system 1.35s/wall 17.77s/max RSS 313904 KiB/44%/exit 0. No controlled benchmark comparison. SQL counters on expanded run match Hotfix 001: 20 meta queries, 18 chunk queries, 51 rows read, 49 rows written, 5242180 attempted bytes before restart; 3 meta queries/1 chunk query/4 rows read/0 writes after final restart. Hotfix 001 DO wall time sample: small writes 0–3ms, rev 0–1ms, near-5MiB write 62ms, read 18ms, read after restart 29ms, post-stamping oversize rejection 99ms.
+- Local resource design budget: 512 KiB chunk and 8 MiB serialized state cap imply at most 16 data chunks, plus one metadata record per profile; 5 MiB request cap; depth 256. Revision path performs two indexed SELECTs (quarantine flag and metadata), no chunk reads; full write replaces up to 16 prior chunks with up to 16 chunks and one metadata record, before accounting for index/engine overhead. This is a logical operation bound, not billing row counts or a guaranteed latency/CPU budget. No per-request isolate CPU/heap profiling established; aggregate GNU time and wall/SQL evidence satisfy local measurement scope only. Hosted Workers/DO CPU, memory, duration, row usage, storage and shared account quota/cost must be tested before production (Phase 7 staging gate).
+- No original backend/frontend/Docker/failover changes, no production API or real data, no remote Cloudflare resources/deploy, no main merge. Owner acceptance required; do not start Phase 3.
+
+### Current P2 acceptance matrix
+| ID | Evidence | Status |
+|---|---|---|
+| P2-01 | local schema boot/restart/unsupported version rejection | PASS |
+| P2-02 | missing vs corrupt/unavailable; fault returns 503 | PASS |
+| P2-03 | UTF-8 codec, chunk bounds, near-5MiB, expansion 413 preserves data | PASS |
+| P2-04 | revision/wid parity and no chunk query on poll | PASS |
+| P2-05 | concurrent 200/409 and actual upstream client merge | PASS |
+| P2-06 | wrong wid at same rev, optional/null legacy baseRev | PASS |
+| P2-07 | response rev 9/stored 10, wid shape/history, ts parity | PASS |
+| P2-08 | wire parser unit coverage, runtime malformed/empty/array/depth rejection and preservation | PASS |
+| P2-09 | expanded deletion/reset parity marker PASS, hidden bookkeeping and active exclusion, unknown fields | PASS |
+| P2-10 | fault after chunk or metadata write, rollback preserves prior state | PASS |
+| P2-11 | restart equality, shrink, corruption and persistent quarantine | PASS |
+| P2-12 | fixture profiles isolated, unknown and production routes rejected; not production auth | PASS |
+| P2-13 | synthetic seed/dry-run/export, checksum, mismatch, idempotency, injected failure, no overwrite/rewind | PASS |
+| P2-14 | actual upstream differential and reused sync algorithms; documented intentional bounds/deviations | PASS |
+| P2-15 | latest test commit 51c7b63a: storage/POC PASS, API/frontend pending | OPEN |
+| P2-16 | successful local CPU/RSS artifact, wall/SQL measurements, logical row/size budget; hosted gate retained | PASS (LOCAL SCOPE) |
+| P2-17 | isolation/scope verified; owner acceptance pending | OPEN |
+
+Phase 2 remains OPEN; 15/17 criteria have local evidence, 2 open. Do not propose closure until latest complete CI and explicit owner acceptance. Documentation-only update, runtime code unchanged. 
