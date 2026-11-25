@@ -75,12 +75,15 @@ jobs:
           node-version: '26'
       - run: npm ci --no-audit --no-fund
         working-directory: cloudflare-poc
+      - run: npm ci --omit=optional --no-audit --no-fund
+        working-directory: api
+      - run: google-chrome --version
       - name: Auth local tests and profiling
         working-directory: cloudflare-poc
         run: |
           mkdir -p reports
           status=0
-          /usr/bin/time -v -o reports/auth-process-profile.txt node --test --test-concurrency=1 test/auth-core.test.mjs || status=$?
+          /usr/bin/time -v -o reports/auth-process-profile.txt node --test --test-concurrency=1 test/auth-core.test.mjs test/auth-fault.test.mjs test/auth-differential.test.mjs test/auth-browser.test.mjs || status=$?
           cat reports/auth-process-profile.txt
           exit "$status"
       - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f

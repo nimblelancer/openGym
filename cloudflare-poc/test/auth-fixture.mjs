@@ -32,8 +32,10 @@ export function authenticator({rp='poc.invalid',origin='https://poc.invalid',uv=
       const obj = cbor(new Map([['fmt','none'],['attStmt',new Map()],['authData',data]]));
       return { ...common, response: { clientDataJSON: b64(client('webauthn.create',challenge)), attestationObject: b64(obj), transports: ['internal'] } };
     },
-    login(challenge, count = 1) {
-      const cd = client('webauthn.get', challenge), ad = authData(uv?0x05:0x01,count);
+    login(challenge, count = 1, overrides={}) {
+      const cd = overrides.origin ? Buffer.from(JSON.stringify({type:'webauthn.get',challenge,origin:overrides.origin,crossOrigin:false})) : client('webauthn.get', challenge);
+      const ad = authData((overrides.uv??uv)?0x05:0x01,count);
+      if(overrides.rp)hash(overrides.rp).copy(ad,0);
       return { ...common, response: { clientDataJSON: b64(cd), authenticatorData: b64(ad),
         signature: b64(sign('sha256', cat(ad, hash(cd)), privateKey)) } };
     }

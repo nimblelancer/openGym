@@ -1,24 +1,8 @@
 import {test} from 'node:test';
 import assert from 'node:assert/strict';
-import {randomBytes} from 'node:crypto';
-import {localRunner} from './local-runner.mjs';
 import {authenticator} from './auth-fixture.mjs';
 import {config,issue,parse,cookies,TTL,mac} from '../src/auth/session.js';
-const secret=()=>randomBytes(32).toString('hex');
-const fixture=async(options={})=>{
-  const AUTH_SECRET=secret(),SETUP_CODE=secret();
-  const runner=await localRunner('wrangler.api.jsonc',{health:'/api/health',privateLogs:true,...options,vars:origin=>({AUTH_SECRET,SETUP_CODE,API_ORIGIN:origin,RP_ID:'localhost',...(options.vars?.(origin)||{})})});
-  const call=async(path,method='GET',body,headers={})=>{
-    const r=await fetch(runner.base+path,{method,headers:{...(body===undefined?{}:{'Content-Type':'application/json'}),...headers},...(body===undefined?{}:{body:JSON.stringify(body)}),signal:AbortSignal.timeout(30000)});
-    const data=r.status===204?null:await r.json();
-    console.log(method,path.split('?')[0],r.status,'local wall ms:',r.headers.get('x-poc-wall-ms'));
-    return {status:r.status,data,cookies:r.headers.getSetCookie(),headers:r.headers};
-  };
-  return {runner,call,SETUP_CODE,c:config({AUTH_SECRET,SETUP_CODE,API_ORIGIN:runner.origin,RP_ID:'localhost'})};
-};
-const bodyOf=r=>{assert.equal(r.status,200);return r.data;};
-const cookieOf=r=>{assert.equal(r.status,200);assert.ok(r.cookies.length);assert.match(r.cookies[0],/HttpOnly/);return {cookie:r.cookies[0].split(';')[0]};};
-const post=(call,path,b={},h={})=>call(path,'POST',b,h);
+import {secret,fixture,bodyOf,cookieOf,post} from './auth-test-helpers.mjs';
 test('session primitives: secret validation, expiry, kind, MAC, HTTPS cookies',()=>{
   assert.throws(()=>config({}));
   const c=config({AUTH_SECRET:secret(),SETUP_CODE:secret(),API_ORIGIN:'https://localhost',RP_ID:'localhost'}),u={id:'abcdefghijklmnop',sv:2};
@@ -38,7 +22,6 @@ test('local signed WebAuthn: bootstrap race, management, pairing, revocation and
   const dev=()=>authenticator({rp:'localhost',origin:runner.origin});
   const a=dev(),b=dev(),d=dev();let count=0;
   const options=()=>post(call,'/api/login/options');
-  const proof=async()=>{const o=bodyOf(await options());return {cid:o.cid,credential:a.login(o.options.challenge,++count)};};
   const register=()=>post(call,'/api/register/options',{name:'Synthetic Owner',code:SETUP_CODE});
   try{
     await runner.start();
@@ -71,12 +54,16 @@ test('local signed WebAuthn: bootstrap race, management, pairing, revocation and
     const wrongOrigin=authenticator({rp:'localhost',origin:'http://wrong.invalid'});
     const lo=bodyOf(await options());
     assert.equal((await post(call,'/api/login/verify',{cid:lo.cid,credential:wrongOrigin.login(lo.options.challenge)})).status,404);
+    for(const overrides of [{origin:'http://wrong.invalid'},{rp:'wrong.invalid'},{uv:false}]){
+      const o=bodyOf(await options());assert.equal((await post(call,'/api/login/verify',{cid:o.cid,credential:owner.login(o.options.challenge,++count,overrides)})).status,400);
+    }
+    const sig=bodyOf(await options()),invalidSig=owner.login(sig.options.challenge,++count);invalidSig.response.signature=Buffer.alloc(64).toString('base64url');
+    assert.equal((await post(call,'/api/login/verify',{cid:sig.cid,credential:invalidSig})).status,400);
     const bad=bodyOf(await options());
     assert.equal((await post(call,'/api/login/verify',{cid:bad.cid,credential:owner.login('wrong',++count)})).status,400);
     assert.equal((await post(call,'/api/login/verify',{cid:bad.cid,credential:owner.login(bad.options.challenge,++count)})).data.code,'challenge-expired');
     const login=await ownerProof();h=cookieOf(await post(call,'/api/login/verify',login));
     assert.equal((await post(call,'/api/login/verify',login)).status,400);
-    const shared=await Promise.all([ownerProof(),ownerProof()]);
     const sameCounter=count+1;count=sameCounter;
     // Generate two independent assertions with the same nonzero counter; only one may commit.
     const l1=bodyOf(await options()),l2=bodyOf(await options());

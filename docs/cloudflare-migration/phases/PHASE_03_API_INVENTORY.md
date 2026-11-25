@@ -176,3 +176,5 @@
 | `POST /api/admin/user/trainer` | Deferred |
 
 Safety deviations: user verification required, kindless legacy tokens rejected, duplicate/mixed credentials refused, persistent single-owner bootstrap closed even after deletion, fixed global/owner throttling (no trusted client address in local mode), CORS exact local/native allowlist, device link 10 min as upstream, pair/challenge 5 min. Generic crypto verification errors until exact upstream error mapping is tested. No production approval.
+
+Auth contract tests now include upstream actual Node HTTP differential subset and a Chrome virtual ceremony, pending CI. Device links follow upstream 10 min TTL. Physical browser/manual, full caller mapping, supported-route exact error mapping and activity behavior remain pending.

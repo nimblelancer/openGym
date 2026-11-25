@@ -1,0 +1,57 @@
+import {test} from 'node:test';
+import assert from 'node:assert/strict';
+import {mkdtemp,writeFile,rm} from 'node:fs/promises';
+import {tmpdir} from 'node:os';
+import {join,resolve} from 'node:path';
+import {spawn} from 'node:child_process';
+import {once} from 'node:events';
+import {boundPort} from '../../api/test/helpers.mjs';
+import {authenticator} from './auth-fixture.mjs';
+import {fixture,bodyOf,cookieOf,post,secret} from './auth-test-helpers.mjs';
+test('actual upstream HTTP differential: auth, config, state, pairing, logout and deletion',{timeout:180000},async()=>{
+  const {runner,call,SETUP_CODE}=await fixture(),dir=await mkdtemp(join(tmpdir(),'opengym-auth-diff-'));let child;
+  const dev=authenticator({rp:'localhost',origin:runner.origin});let count=0;
+  try{
+    await writeFile(join(dir,'secret'),secret(),{mode:0o600});
+    // Upstream invite-only config with a synthetic invite; original bootstrap is multi-user.
+    await writeFile(join(dir,'db.json'),JSON.stringify({users:[],creds:[],subs:[],invites:[{code:SETUP_CODE.toUpperCase()}]}));
+    child=spawn(process.execPath,['server.js'],{cwd:resolve('../api'),env:{...process.env,PORT:'0',DATA_DIR:dir,ORIGIN:runner.origin,RP_ID:'localhost',INVITE_ONLY:'1',ALLOW_GUEST:'0',FIRST_USER_ADMIN:'1',PASSWORD_LOGIN:'0'},stdio:['ignore','pipe','pipe']});
+    let log='';child.stdout.on('data',d=>log+=d);child.stderr.on('data',d=>log+=d);
+    const base='http://127.0.0.1:'+await boundPort(child,()=>log);
+    const node=async(path,method='GET',body,headers={})=>{const r=await fetch(base+path,{method,headers:{...(body===undefined?{}:{'content-type':'application/json'}),...headers},...(body===undefined?{}:{body:JSON.stringify(body)}),signal:AbortSignal.timeout(30000)});return {status:r.status,data:await r.json(),cookies:r.headers.getSetCookie()};};
+    await runner.start();
+    const compare=async(path,method='GET',body,nh={},wh={})=>{const a=await node(path,method,body,nh),b=await call(path,method,body,wh);assert.equal(a.status,b.status,path);assert.deepEqual(a.data,b.data,path);return b;};
+    await compare('/api/health');await compare('/api/me');await compare('/api/data');
+    const nconf=bodyOf(await node('/api/config')),wconf=bodyOf(await call('/api/config'));
+    for(const k of ['invite_only','allow_guest','signed_in'])assert.equal(nconf[k],wconf[k]);
+    const no=bodyOf(await post(node,'/api/register/options',{name:'Synthetic',code:SETUP_CODE})),wo=bodyOf(await post(call,'/api/register/options',{name:'Synthetic',code:SETUP_CODE}));
+    assert.equal(no.options.rp.id,wo.options.rp.id);assert.equal(no.options.user.name,wo.options.user.name);
+    const nr=await post(node,'/api/register/verify',{cid:no.cid,credential:dev.register(no.options.challenge)}),wr=await post(call,'/api/register/verify',{cid:wo.cid,credential:dev.register(wo.options.challenge)});
+    let nh=cookieOf(nr),wh=cookieOf(wr);
+    const uidN=nr.data.user.id,uidW=wr.data.user.id;
+    const norm=x=>({...x,id:'fixture-id'});assert.deepEqual(norm(nr.data.user),norm(wr.data.user));
+    await compare('/api/health');await compare('/api/data','GET',undefined,nh,wh);
+    await compare('/api/data/rev','GET',undefined,nh,wh);
+    const state={workouts:[{id:'w',d:'2026-09-01'}],routines:[],_ts:10};
+    const a=bodyOf(await node('/api/data','PUT',{baseRev:0,state,stamped:true},nh)),b=bodyOf(await call('/api/data','PUT',{baseRev:0,state,stamped:true},wh));
+    assert.deepEqual({...a,wid:'wid'},{...b,wid:'wid'});
+    const [nd,wd]=await Promise.all([node('/api/data','GET',undefined,nh),call('/api/data','GET',undefined,wh)]);assert.deepEqual({...nd.data,state:{...nd.data.state,_wid:'wid'}},{...wd.data,state:{...wd.data.state,_wid:'wid'}});
+    await compare('/api/nudge-check?date=2026-09-01','GET',undefined,nh,wh);
+    await compare('/api/nudge-check?date=bad','GET',undefined,nh,wh);
+    await compare('/api/pair/create','POST',{},nh,wh);
+    const nproof=async()=>{const o=bodyOf(await post(node,'/api/login/options'));return {cid:o.cid,credential:dev.login(o.options.challenge,++count)};};
+    const wproof=async()=>{const o=bodyOf(await post(call,'/api/login/options'));return {cid:o.cid,credential:dev.login(o.options.challenge,++count)};};
+    const np=bodyOf(await post(node,'/api/pair/create',await nproof(),nh)),wp=bodyOf(await post(call,'/api/pair/create',await wproof(),wh));
+    const nt=bodyOf(await post(node,'/api/pair/redeem',{code:np.code})),wt=bodyOf(await post(call,'/api/pair/redeem',{code:wp.code}));
+    assert.deepEqual(norm(nt.user),norm(wt.user));assert.ok(nt.token);assert.ok(wt.token);
+    const nph={authorization:'Bearer '+nt.token},wph={authorization:'Bearer '+wt.token};
+    assert.equal(bodyOf(await node('/api/me','GET',undefined,nph)).user.id,uidN);assert.equal(bodyOf(await call('/api/me','GET',undefined,wph)).user.id,uidW);
+    await compare('/api/pair/redeem','POST',{code:'INVALID'});
+    await compare('/api/logout','POST',{},nh,wh);await compare('/api/logout/all','POST',{},nh,wh);
+    await compare('/api/me','GET',undefined,nph,wph);
+    nh=cookieOf(await post(node,'/api/login/verify',await nproof()));wh=cookieOf(await post(call,'/api/login/verify',await wproof()));
+    await compare('/api/account/delete','POST',{name:'Wrong'},nh,wh);
+    const dn=await post(node,'/api/account/delete',{name:'Synthetic',...await nproof()},nh),dw=await post(call,'/api/account/delete',{name:'Synthetic',...await wproof()},wh);assert.equal(dn.status,dw.status);assert.deepEqual(dn.data,dw.data);
+    await compare('/api/health');console.log('PHASE3_UPSTREAM_AUTH_DIFFERENTIAL PASS');
+  }finally{await runner.cleanup();if(child&&child.exitCode===null){const done=once(child,'exit');child.kill('SIGKILL');await done;}await rm(dir,{recursive:true,force:true});}
+});
