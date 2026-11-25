@@ -1,7 +1,7 @@
 # openGym Cloudflare migration — master plan
 
 Date: 2026-11-25. Baseline: e4a68a94c42a3c17cbd560d66ce2e46a7048ab99 (v1.4.5). Branch: feat/cloudflare-migration.
-Status: Phase 0 static feasibility review; conditional GO for local proof of concept only. No production approval.
+Status: Phase 1 local POC passed on Hotfix 001; final locked-install CI still in progress at latest review. Phase 1 remains open. Phase 2 detailed plan prepared, not implemented. No production approval.
 
 ## Goals
 - Run a private, single-owner openGym deployment within the Cloudflare Free plan and the account's remaining quotas.
@@ -30,3 +30,6 @@ Each phase: plan, small commits, test evidence, review, user acceptance where ap
 
 ## Stop conditions
 No safe atomic persistence, official app incompatible, free-tier CPU or asset limits fail, media licensing or quota unresolved, or tests cannot prove no loss: stop and present alternatives (local Docker + Tailscale, VM, or narrower scope). No weaker authentication or silent data truncation to meet cost limits. 
+
+## Phase 2 plan
+See [PHASE_02.md](phases/PHASE_02.md). Begin only after Phase 1 closure and explicit implementation approval. Actual hosted CPU/memory and quota remain Phase 7 staging gates; local wall time is not CPU profiling.
