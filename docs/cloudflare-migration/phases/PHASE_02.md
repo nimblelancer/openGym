@@ -81,3 +81,28 @@ Final tested code baseline remains 17404f1ad3bd8edfa914e93a7de6f12ba4f339e0. Sub
 - Run 45650324821 (db160d94): original Phase 1 POC PASS, differential test PASS; storage runtime merge fixture failed (400/400 instead of 200/409 because stampChange returns a timestamp). Corrected in 1e48fea4.
 - Run 45650418247 (1e48fea4): Phase 1 POC PASS; storage 5/6 passed, actual upstream differential PASS (response rev 9, stored rev 10), local DO/client merge/restart/rollback/import/corruption/schema PASS. SQL evidence before restart: 19 metaQueries, 17 chunkQueries, 49 rowsRead, 49 rowsWritten, 5242180 bytesWritten (attempted writes, not billing). Unit deep-state test failed: Node 26 JSON.stringify accepted 20k nested levels, so relying on RangeError alone is unsafe.
 - Hotfix 001 adds explicit max object nesting depth 256, checked before state transition/import. This is an intentional safety deviation from upstream and documented, not an exact parity claim. Test verifies deep write returns 400 and prior data unchanged. No test disabled. New snapshot export and expanded-size tests also pending final CI. Phase 2 remains OPEN; no remote deployment.
+
+## Phase 2 validation snapshot — 2026-11-25
+Run [45650542950](https://github.com/nimblelancer/openGym/actions/runs/45650542950), code 8ac737ea: actual Node differential PASS, response revision 9 / stored 10, local DO integration PASS including export/import roundtrip and post-stamping expansion 413 (old revision and data unchanged). Storage suite 5/6 passed, failed deep state test addressed by 367425b2. GNU time log for this failed suite: user CPU 4.23s, system CPU 0.83s, elapsed 15.61s, max RSS 310536 KiB, 32% CPU, exit 1. These are process/child measurements, not per-request workerd CPU or hosted billing. SQL sample before restart: 19 meta queries, 17 chunk queries, 49 rows read, 49 rows written and 5242180 bytes written (attempts, not billing). Latest code commit 367425b2, run [45650632284](https://github.com/nimblelancer/openGym/actions/runs/45650632284) queued/in progress at inspection. No final green claim. Prior Phase 1 POC regression passed on db160d94 and 1e48fea4; API regression passed on db160d94. Await latest all 4 jobs and profiling artifact.
+
+| ID | Prior execution evidence | Final code status |
+|---|---|---|
+| P2-01 | schema boot/restart/reject PASS | RETEST |
+| P2-02 | missing/corrupt/fault PASS | RETEST |
+| P2-03 | chunk codec, 5 MiB, expansion 413 PASS | RETEST |
+| P2-04 | metadata-only query assertion PASS | RETEST |
+| P2-05 | actual client merge concurrent writes PASS | RETEST |
+| P2-06 | differential legacy/wid PASS | RETEST |
+| P2-07 | response 9/stored 10, wid/ts PASS | RETEST |
+| P2-08 | basic invalid inputs PASS, deep input FAIL | HOTFIX RETEST |
+| P2-09 | reset/unknown/bookkeeping differential PASS; complete deletion-case review pending | PARTIAL |
+| P2-10 | chunk/metadata fault rollback PASS | RETEST |
+| P2-11 | restart/shrink/corruption PASS | RETEST |
+| P2-12 | fixture profile separation PASS; no production auth | RETEST |
+| P2-13 | seed/export/dry-run/idempotency/fault PASS; live restore explicitly deferred | RETEST |
+| P2-14 | actual upstream Node differential PASS | RETEST |
+| P2-15 | latest 4-job CI | PENDING |
+| P2-16 | prior process CPU/RSS, wall/SQL counters recorded; final run and per-request profiling limits pending | PARTIAL |
+| P2-17 | no remote operations/upstream app changes; final user acceptance pending | OPEN |
+
+Phase 2 remains OPEN. Do not begin Phase 3 until final CI passes, any remaining explicit coverage gaps are reviewed, and owner accepts. This is a documentation-only commit; code validation is tied to 367425b2. No deployment.
