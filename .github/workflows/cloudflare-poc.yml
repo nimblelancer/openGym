@@ -62,6 +62,34 @@ jobs:
           path: cloudflare-poc/reports/storage-process-profile.txt
           if-no-files-found: warn
           retention-days: 7
+  auth-core:
+    if: github.ref == 'refs/heads/feat/cloudflare-migration'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1
+        with:
+          node-version: '26'
+      - run: npm ci --no-audit --no-fund
+        working-directory: cloudflare-poc
+      - name: Auth local tests and profiling
+        working-directory: cloudflare-poc
+        run: |
+          mkdir -p reports
+          status=0
+          /usr/bin/time -v -o reports/auth-process-profile.txt node --test --test-concurrency=1 test/auth-core.test.mjs || status=$?
+          cat reports/auth-process-profile.txt
+          exit "$status"
+      - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f
+        if: always()
+        with:
+          name: phase3-auth-process-profile
+          path: cloudflare-poc/reports/auth-process-profile.txt
+          if-no-files-found: warn
+          retention-days: 7
   upstream-api:
     if: github.ref == 'refs/heads/feat/cloudflare-migration'
     runs-on: ubuntu-latest

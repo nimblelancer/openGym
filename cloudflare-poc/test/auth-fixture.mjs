@@ -16,24 +16,24 @@ function cbor(v) {
   if (v instanceof Map) return cat(head(5, v.size), ...[...v].flatMap(([k, x]) => [cbor(k), cbor(x)]));
   throw Error('unsupported fixture CBOR value');
 }
-export function authenticator() {
+export function authenticator({rp='poc.invalid',origin='https://poc.invalid',uv=true}={}) {
   const { publicKey, privateKey } = generateKeyPairSync('ec', { namedCurve: 'prime256v1' });
   const jwk = publicKey.export({ format: 'jwk' });
   const cose = cbor(new Map([[1,2],[3,-7],[-1,1],[-2,Buffer.from(jwk.x,'base64url')],[-3,Buffer.from(jwk.y,'base64url')]]));
   const id = randomBytes(32);
-  const rpHash = hash('poc.invalid');
-  const client = (type, challenge) => Buffer.from(JSON.stringify({ type, challenge, origin: 'https://poc.invalid', crossOrigin: false }));
+  const rpHash = hash(rp);
+  const client = (type, challenge) => Buffer.from(JSON.stringify({ type, challenge, origin, crossOrigin: false }));
   const authData = (flag, count) => { const c = Buffer.alloc(4); c.writeUInt32BE(count); return cat(rpHash, Buffer.from([flag]), c); };
   const common = { id: b64(id), rawId: b64(id), type: 'public-key', clientExtensionResults: {}, authenticatorAttachment: 'platform' };
   return {
     register(challenge) {
       const len = Buffer.alloc(2); len.writeUInt16BE(id.length);
-      const data = cat(authData(0x45,0), Buffer.alloc(16), len, id, cose);
+      const data = cat(authData(uv?0x45:0x41,0), Buffer.alloc(16), len, id, cose);
       const obj = cbor(new Map([['fmt','none'],['attStmt',new Map()],['authData',data]]));
       return { ...common, response: { clientDataJSON: b64(client('webauthn.create',challenge)), attestationObject: b64(obj), transports: ['internal'] } };
     },
     login(challenge, count = 1) {
-      const cd = client('webauthn.get', challenge), ad = authData(0x05,count);
+      const cd = client('webauthn.get', challenge), ad = authData(uv?0x05:0x01,count);
       return { ...common, response: { clientDataJSON: b64(cd), authenticatorData: b64(ad),
         signature: b64(sign('sha256', cat(ad, hash(cd)), privateKey)) } };
     }
