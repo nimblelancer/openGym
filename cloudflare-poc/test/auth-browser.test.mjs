@@ -52,7 +52,8 @@ test('manual localhost UI and proxy smoke with Chrome virtual authenticator',{ti
       code=output.match(/Disposable setup code \(local terminal only\): ([a-f0-9]{64})/)?.[1];if(origin&&code)break;await sleep(100);
     }
     assert.ok(origin&&code,'manual launcher readiness timeout');
-    const health=await fetch(origin.replace('localhost','127.0.0.1')+'/api/health',{headers:{host:new URL(origin).host}});assert.equal(health.status,200);
+    // Use the same localhost authority as the browser; Fetch does not reliably permit Host overrides.
+    const health=await fetch(origin+'/api/health');assert.equal(health.status,200);
     browser=spawn(process.env.CHROME_BIN||'google-chrome',['--headless','--no-sandbox','--disable-dev-shm-usage','--remote-debugging-port=0','--user-data-dir='+dir,'about:blank'],{stdio:'ignore'});
     let launchError;browser.on('error',e=>launchError=e);
     let port;for(let i=0;i<100;i++){if(launchError)throw launchError;if(browser.exitCode!==null)throw Error('Chrome exited');try{port=(await readFile(join(dir,'DevToolsActivePort'),'utf8')).split('\n')[0];break;}catch{}await sleep(100);}
