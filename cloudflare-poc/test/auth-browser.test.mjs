@@ -44,10 +44,10 @@ test('manual localhost UI and proxy smoke with Chrome virtual authenticator',{ti
   const dir=await mkdtemp(join(tmpdir(),'opengym-manual-browser-'));let browser,ws,launcher;
   try{
     launcher=spawn(process.execPath,['test/manual-passkey.mjs'],{stdio:['ignore','pipe','pipe']});
-    let output='',launchError;launcher.on('error',e=>launchError=e);launcher.stdout.on('data',b=>{output=(output+b).slice(-8000);});launcher.stderr.resume();
+    let output='',launcherError;launcher.on('error',e=>launcherError=e);launcher.stdout.on('data',b=>{output=(output+b).slice(-8000);});launcher.stderr.resume();
     let origin,code;
     for(let i=0;i<300;i++){
-      if(launchError)throw Error('manual launcher failed');if(launcher.exitCode!==null)throw Error('manual launcher exited');
+      if(launcherError)throw Error('manual launcher failed');if(launcher.exitCode!==null)throw Error('manual launcher exited');
       origin=output.match(/Open in a separate browser profile: (http:\/\/localhost:\d+)/)?.[1];
       code=output.match(/Disposable setup code \(local terminal only\): ([a-f0-9]{64})/)?.[1];if(origin&&code)break;await sleep(100);
     }
