@@ -7,7 +7,7 @@ export const fixture=async(options={})=>{
   const AUTH_SECRET=secret(),SETUP_CODE=secret();
   const runner=await localRunner('wrangler.api.jsonc',{health:'/api/health',privateLogs:true,...options,vars:origin=>({AUTH_SECRET,SETUP_CODE,API_ORIGIN:origin,RP_ID:'localhost',...(options.vars?.(origin)||{})})});
   const call=async(path,method='GET',body,headers={})=>{
-    const r=await fetch(runner.base+path,{method,headers:{...(body===undefined?{}:{'Content-Type':'application/json'}),...headers},...(body===undefined?{}:{body:JSON.stringify(body)}),signal:AbortSignal.timeout(30000)});
+    const r=await fetch(runner.base+path,{method,headers:{...(!['GET','HEAD','OPTIONS'].includes(method)?{Origin:runner.origin}:{}),...(body===undefined?{}:{'Content-Type':'application/json'}),...headers},...(body===undefined?{}:{body:JSON.stringify(body)}),signal:AbortSignal.timeout(30000)});
     const data=r.status===204?null:await r.json();
     console.log(method,path.split('?')[0],r.status,'local wall ms:',r.headers.get('x-poc-wall-ms'));
     return {status:r.status,data,cookies:r.headers.getSetCookie(),headers:r.headers};

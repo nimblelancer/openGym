@@ -41,7 +41,19 @@ test('offline SQLite fault injection, expired challenges/codes, disabled account
     // Set the local bucket to its limit; no mass request loop or public endpoint is needed.
     await edit(db=>db.prepare("INSERT OR REPLACE INTO auth_limits VALUES('anonymous',?,60)").run(Math.floor(Date.now()/60000)));
     assert.equal((await post(call,'/api/login/options')).status,429);
-    await edit(db=>db.exec('DELETE FROM auth_limits;'));
+    await edit(db=>{
+      db.exec('DELETE FROM auth_limits; DELETE FROM auth_challenges;');
+      const insert=db.prepare('INSERT INTO auth_challenges VALUES(?,?,?)');
+      for(let i=0;i<256;i++)insert.run('synthetic-'+i,'{}',Date.now()+300000);
+    });
+    assert.equal((await post(call,'/api/login/options')).status,429);
+    await edit(db=>{
+      assert.equal(db.prepare('SELECT count(*) AS n FROM auth_challenges').get().n,256);
+      assert.deepEqual(db.prepare('SELECT name FROM pragma_table_info(\'auth_audit\') ORDER BY cid').all().map(x=>x.name),['id','event','at']);
+      assert.ok(db.prepare('SELECT count(*) AS n FROM auth_audit').get().n<=256);
+      assert.ok(db.prepare('SELECT event FROM auth_audit').all().every(x=>/^[a-z-]+$/.test(x.event)));
+      db.exec('DELETE FROM auth_challenges; DELETE FROM auth_limits;');
+    });
     assert.equal((await post(call,'/api/account/delete',{name:'Fault fixture',...await proof()},h)).status,200);
     await runner.stop();const p=await findDb(runner.dir),db=new DatabaseSync(p);
     try{for(const t of ['auth_users','auth_creds','auth_codes','auth_challenges','profile_state','profile_chunks','corrupt_profiles'])assert.equal(db.prepare('SELECT count(*) AS n FROM '+t).get().n,0,t);assert.equal(db.prepare('SELECT closed FROM auth_version WHERE id=1').get().closed,1);}finally{db.close();}

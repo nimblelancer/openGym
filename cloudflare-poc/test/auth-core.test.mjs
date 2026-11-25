@@ -43,6 +43,11 @@ test('local signed WebAuthn: bootstrap race, management, pairing, revocation and
     assert.equal((await post(call,'/api/login/password')).status,404);
     assert.equal((await post(call,'/api/register/options',{name:'Synthetic',code:'wrong'})).status,403);
     assert.equal((await post(call,'/api/login/options',{}, {origin:'https://hostile.invalid'})).status,403);
+    const bare=async(path,method,body,h={})=>fetch(runner.base+path,{method,headers:{'Content-Type':'application/json',...h},body:JSON.stringify(body)});
+    assert.equal((await bare('/api/login/options','POST',{})).status,403);
+    assert.equal((await bare('/api/login/options','POST',{}, {'sec-fetch-site':'none'})).status,403);
+    assert.equal((await bare('/api/login/options','POST',{}, {'sec-fetch-site':'same-origin'})).status,200);
+    assert.equal((await post(call,'/api/login/options',{}, {'sec-fetch-site':'cross-site'})).status,403);
     const noUV=authenticator({rp:'localhost',origin:runner.origin,uv:false});
     const no=bodyOf(await register());
     assert.equal((await post(call,'/api/register/verify',{cid:no.cid,credential:noUV.register(no.options.challenge)})).status,400);
@@ -126,6 +131,10 @@ test('local signed WebAuthn: bootstrap race, management, pairing, revocation and
     }
     const state={workouts:[{id:'w',d:'2026-09-01'}],routines:[],_ts:1};
     assert.equal((await call('/api/data','PUT',{baseRev:0,state},{...h,origin:'https://sibling.invalid','sec-fetch-site':'same-site'})).status,403);
+    assert.equal((await bare('/api/data','PUT',{baseRev:0,state},h)).status,403);
+    assert.equal((await bare('/api/data','PUT',{baseRev:0,state},{...h,'sec-fetch-site':'same-site'})).status,403);
+    assert.equal((await bare('/api/data','PUT',{baseRev:0,state},{...h,'sec-fetch-site':'none'})).status,403);
+    assert.deepEqual((await call('/api/data','GET',undefined,h)).data,{state:null,rev:0});
     const saved=bodyOf(await call('/api/data','PUT',{baseRev:0,profile:'attacker',state,stamped:true},phone));
     assert.equal((await call('/api/data/rev','GET',undefined,h)).data.wid,saved.wid);
     assert.equal((await call('/api/data','PUT',{baseRev:0,state},phone)).status,409);

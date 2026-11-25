@@ -46,8 +46,12 @@ export function csrf(c,req,key,s){
   const signIn=/^POST \/api\/(register|login|device-link)\//.test(key);
   if(!signIn&&s?.bearer&&s.kind==='b')return true;
   const origin=req.headers.get('origin'),site=req.headers.get('sec-fetch-site');
-  if(origin&&origin!==c.origin)return false;
-  return !site||site==='same-origin'||site==='none';
+  // Unlike the upstream permissive non-browser fallback, cookie mutations and
+  // browser sign-in need affirmative origin evidence. A conflicting fetch-site
+  // header never becomes trusted merely because Origin matches.
+  if(origin!==null&&origin!==c.origin)return false;
+  if(site&&site!=='same-origin'&&site!=='none')return false;
+  return origin===c.origin||site==='same-origin';
 }
 export function cors(c,req){
   const o=req.headers.get('origin'),h=new Headers({'Cache-Control':'no-store','X-Content-Type-Options':'nosniff','Vary':'Origin'});
