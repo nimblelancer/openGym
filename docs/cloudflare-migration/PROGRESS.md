@@ -219,3 +219,6 @@ Status: IMPLEMENTED CANDIDATE / OPEN FOR VALIDATION. Do not start Phase 4.
 | P3-21 | no production or main merge, owner acceptance and physical browser evidence open | OPEN |
 
 All PRIOR PASS entries require final-code review. No Phase 3 closure, no Phase 4, no Cloudflare remote resources, no real personal data or Learning Hub changes. Future manual physical passkey test must use disposable local profile and separate authenticator entry; official installed mobile app end-to-end remains Phase 4.
+
+### Latest auth CI evidence
+Run 45653658471, tested code edac5325: auth-core job 139344472303 SUCCESS 7/7, no failures/skips, all four PHASE3 markers PASS including extended passkey/device-link differential and origin/RP mismatch checks. POC/storage SUCCESS; API/frontend still running at latest inspection. P3-08 and P3-18 now have expanded differential evidence on latest code; P3-18 remains subject to exact supported-route error/header review and documented deviations. P3-05 origin/RP stable-code negative cases PASS, wrong-purpose coverage open. P3-13 unhealthy JSON/missing secret PASS. P3-20 and P3-21 remain open. Physical passkey and additional explicit negative cases are not waived. No code changes or deployment in this update.
