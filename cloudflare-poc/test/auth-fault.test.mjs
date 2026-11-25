@@ -10,16 +10,15 @@ async function findDb(root){
     const p=join(root,entry.name);
     if(entry.isDirectory()){const result=await findDb(p);if(result)return result;}
     else if(entry.isFile()&&entry.name.endsWith('.sqlite')){
-      const db=new DatabaseSync(p);
-      const found=db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='auth_version'").get();
-      db.close();if(found)return p;
+      const db=new DatabaseSync(p,{timeout:5000});
+      try{const found=db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='auth_version'").get();if(found)return p;}finally{db.close();}
     }
   }
 }
 test('offline SQLite fault injection, expired challenges/codes, disabled account, bounded attempts',{timeout:180000},async()=>{
   const {runner,call,SETUP_CODE}=await fixture();const a=authenticator({rp:'localhost',origin:runner.origin});let counter=0;
   const proof=async()=>{const o=bodyOf(await post(call,'/api/login/options'));return {cid:o.cid,credential:a.login(o.options.challenge,++counter)};};
-  const edit=async fn=>{await runner.stop();const p=await findDb(runner.dir);assert.ok(p,'auth SQLite file missing');const db=new DatabaseSync(p);try{fn(db);}finally{db.close();}await runner.start();};
+  const edit=async fn=>{await runner.stop();const p=await findDb(runner.dir);assert.ok(p,'auth SQLite file missing');const db=new DatabaseSync(p,{timeout:5000});try{fn(db);}finally{db.close();}await runner.start();};
   try{
     await runner.start();const o=bodyOf(await post(call,'/api/register/options',{name:'Fault fixture',code:SETUP_CODE}));
     const h=cookieOf(await post(call,'/api/register/verify',{cid:o.cid,credential:a.register(o.options.challenge)}));
@@ -55,7 +54,7 @@ test('offline SQLite fault injection, expired challenges/codes, disabled account
       db.exec('DELETE FROM auth_challenges; DELETE FROM auth_limits;');
     });
     assert.equal((await post(call,'/api/account/delete',{name:'Fault fixture',...await proof()},h)).status,200);
-    await runner.stop();const p=await findDb(runner.dir),db=new DatabaseSync(p);
+    await runner.stop();const p=await findDb(runner.dir);assert.ok(p);const db=new DatabaseSync(p,{timeout:5000});
     try{for(const t of ['auth_users','auth_creds','auth_codes','auth_challenges','profile_state','profile_chunks','corrupt_profiles'])assert.equal(db.prepare('SELECT count(*) AS n FROM '+t).get().n,0,t);assert.equal(db.prepare('SELECT closed FROM auth_version WHERE id=1').get().closed,1);}finally{db.close();}
     console.log('PHASE3_AUTH_FAULT_ROLLBACK PASS');
   }finally{await runner.cleanup();}
@@ -66,7 +65,7 @@ test('auth schema rejection and signing-key rotation preserve state, invalidate 
   const {runner,call}=await fixture({allowUnavailable:true,vars:()=>({AUTH_SECRET:signing,SETUP_CODE:setup})});
   const dev=authenticator({rp:'localhost',origin:runner.origin});let counter=0;
   const proof=async()=>{const o=bodyOf(await post(call,'/api/login/options'));return {cid:o.cid,credential:dev.login(o.options.challenge,++counter)};};
-  const edit=async fn=>{await runner.stop();const p=await findDb(runner.dir);assert.ok(p);const db=new DatabaseSync(p);try{fn(db);}finally{db.close();}};
+  const edit=async fn=>{await runner.stop();const p=await findDb(runner.dir);assert.ok(p);const db=new DatabaseSync(p,{timeout:5000});try{fn(db);}finally{db.close();}};
   try{
     await runner.start();
     const opts=bodyOf(await post(call,'/api/register/options',{name:'Rotation fixture',code:setup}));
