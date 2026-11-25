@@ -19,3 +19,5 @@ node scripts/catalogue/stage-media.mjs frontend/dist
 ```
 No media is copied outside openGym. Manifest checks Free limits (20k assets, 25 MiB per file), not actual deployment. 
 Pinned direct dependencies; lockfile not yet generated because npm network is unavailable in authoring runtime. CI installs exact direct versions and generates local lock; commit verified lockfile before Phase 2. No deploy commands in workflow.
+
+The HTTP adapter is now an isolated worker/config (`wrangler.node.jsonc`) with its own test process, so adapter failure does not prevent the Fetch/DO tests running. CI publishes the generated lockfile and asset manifest as short-lived artifacts. Neither configuration is deployable by project policy.

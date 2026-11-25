@@ -1,7 +1,5 @@
 // AGPL-3.0-or-later. Synthetic test harness, not an openGym server.
 import { DurableObject } from 'cloudflare:workers';
-import { handleAsNodeRequest } from 'cloudflare:node';
-import { createServer } from 'node:http';
 import { generateRegistrationOptions, verifyRegistrationResponse,
   generateAuthenticationOptions, verifyAuthenticationResponse } from '@simplewebauthn/server';
 import { MAX_BODY, encodeChunks, decodeChunks, makeNext } from './state.js';
@@ -9,18 +7,9 @@ import { MAX_BODY, encodeChunks, decodeChunks, makeNext } from './state.js';
 const RP_ID = 'poc.invalid';
 const ORIGIN = 'https://poc.invalid'; // synthetic authenticator only
 const json = (body, status = 200) => Response.json(body, { status, headers: { 'Cache-Control': 'no-store' } });
-const allowed = new Set(['GET /__poc/health','POST /__poc/node','GET /__poc/state','PUT /__poc/state',
+const allowed = new Set(['GET /__poc/health','GET /__poc/state','PUT /__poc/state',
   'GET /__poc/rev','POST /__poc/rollback','POST /__poc/register/options','POST /__poc/register/verify',
   'POST /__poc/login/options','POST /__poc/login/verify']);
-
-const nodeServer = createServer(async (req, res) => {
-  let data = '';
-  for await (const part of req) data += part;
-  res.setHeader('Content-Type', 'application/json');
-  res.setHeader('Set-Cookie', ['poc-a=1; HttpOnly', 'poc-b=2; HttpOnly']);
-  res.end(JSON.stringify({ method: req.method, url: req.url, header: req.headers['x-poc'], data }));
-});
-nodeServer.listen(9090);
 
 export default {
   async fetch(request, env) {
@@ -29,10 +18,6 @@ export default {
     if (!['localhost','127.0.0.1'].includes(url.hostname)) return json({ error: 'local only' }, 403);
     const key = request.method + ' ' + url.pathname;
     if (!allowed.has(key)) return json({ error: 'not found' }, 404);
-    if (key === 'POST /__poc/node') {
-      if (Number(request.headers.get('content-length')) > 4096) return json({ error: 'too large' }, 413);
-      return handleAsNodeRequest(9090, request);
-    }
     // Do not parse state or run expensive cryptography in the thin Worker.
     return env.POC.get(env.POC.idFromName('synthetic-v1')).fetch(request);
   }

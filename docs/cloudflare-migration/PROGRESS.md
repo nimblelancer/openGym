@@ -8,3 +8,5 @@
 ## 2026-11-25 — Phase 1 implementation
 - Added isolated local-only Worker/DO POC, Node HTTP adapter and Fetch routes, synthetic WebAuthn verification, atomic chunk storage/restart/rollback tests, near-5 MiB test, asset manifest script and dedicated CI.
 - Runtime and upstream tests pending: authoring environment cannot resolve GitHub/npm registry. CI outcome must be inspected before declaring Phase 1 PASS. No real cloud resources, deployment, credentials, production API or Learning Hub changes. See phases/PHASE_01.md.
+
+- Review follow-up: isolated HTTP adapter runtime and added CI lockfile/manifest artifacts. CI execution still unverified; no run returned at inspection time.

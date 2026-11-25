@@ -10,3 +10,6 @@ Base: Phase 0 commit 83f41c30f757cd8b35fdde4848af5a2aa0e0d5f0. Implementation on
 
 ## Gate
 Implementation delivered; validation PENDING until CI runs. Authoring container DNS/network unavailable for GitHub clone and npm registry. No runtime test has been claimed PASS. Require local Worker boot, DO restart, rollback, conflict, valid/invalid synthetic auth, large-state, asset manifest and baseline checks. Review any failures before starting Phase 2. Actual browser passkey and cloud CPU/billing not proven by local tests.
+
+## Review follow-up
+Separated Node HTTP adapter from Fetch/DO runtime into its own Worker and local test. CI pins setup-node to upstream's reviewed revision and publishes generated dependency lockfile and asset manifest as artifacts. No run was listed immediately after implementation commit; fork Actions availability is unconfirmed. No test status upgraded.

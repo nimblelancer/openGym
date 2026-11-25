@@ -1,0 +1,15 @@
+{
+  "name": "opengym-phase1-node-poc",
+  "main": "src/node-worker.js",
+  "compatibility_date": "2026-10-01",
+  "compatibility_flags": [
+    "nodejs_compat",
+    "enable_nodejs_http_server_modules"
+  ],
+  "workers_dev": false,
+  "preview_urls": false,
+  "dev": {
+    "ip": "127.0.0.1",
+    "port": 8787
+  }
+}
