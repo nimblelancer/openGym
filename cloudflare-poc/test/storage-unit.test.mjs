@@ -31,3 +31,11 @@ test('wire body error status and precedence',async()=>{
   }
   assert.deepEqual(await readBody(new Request('http://localhost',{method:'PUT',body:'{}',headers:{'content-type':'application/json'}})),{});
 });
+
+test('deep state cannot overwrite; post-stamping storage cap explicitly rejects expansion',()=>{
+  const deep={workouts:[]};let ptr=deep;for(let i=0;i<20000;i++){ptr.next={};ptr=ptr.next;}
+  assert.equal(transition(null,{state:deep},{now,wid}).status,400);
+  const existing={_rev:1,_wid:wid(),workouts:[],legacyHuge:'x'.repeat(5*1024*1024-128)};
+  const next=transition(existing,{baseRev:1,state:{workouts:[],newHuge:'x'.repeat(4*1024*1024)}},{now,wid});
+  assert.equal(next.status,200);assert.ok(next.next.legacyHuge);assert.throws(()=>encode(next.next),TooLarge);
+});

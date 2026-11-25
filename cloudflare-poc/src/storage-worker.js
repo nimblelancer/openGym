@@ -33,9 +33,11 @@ export class StorageFixture extends DurableObject{
         else this.store.sql.exec('UPDATE profile_state SET rev=999 WHERE profile_id=?',id);
         r={status:200,body:{ok:true}};
       }else if(op==='schema'&&req.method==='POST'&&id==='schema'){
-        // Exercise constructor rejection without permanently changing the test database.
+        // Synthetic schema probe only; restore version even if assertion fails.
         let rejected=false;
-        try{this.storage.transactionSync(()=>{this.store.sql.exec('UPDATE schema_version SET version=99');try{new StateStore(this.storage);}catch{rejected=true;}throw Error('rollback schema fixture');});}catch(e){if(e.message!=='rollback schema fixture')throw e;}
+        this.store.sql.exec('UPDATE schema_version SET version=99');
+        try{new StateStore(this.storage);}catch(e){rejected=e.message==='unsupported schema';}
+        finally{this.store.sql.exec('UPDATE schema_version SET version=1');}
         r={status:200,body:{rejected}};
       }else r={status:404,body:{error:'not found'}};
     }catch(e){r={status:e instanceof HttpInputError?e.status:503,body:{error:e instanceof HttpInputError?e.message:'state unreadable'}};}

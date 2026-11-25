@@ -21,9 +21,10 @@ test('Phase 2 local DO: transactions, actual client merge, corruption, schema, i
     assert.equal((await call(route('schema','schema'),'POST',{})).data.rejected,true);
     let first=await put('alpha',{baseRev:0,stamped:true,state:base});assert.equal(first.status,200);assert.match(first.data.wid,/^[0-9a-f]{16}$/);
     const cur=(await get('alpha')).data.state;
-    const a=stampChange(cur,{...structuredClone(cur),workouts:[workout('a')],_ts:2},1800000000001);
-    const b=stampChange(cur,{...structuredClone(cur),workouts:[workout('b')],_ts:3},1800000000002);
-    // stampChange mutates/returns the new state; use the actual upstream merge implementation.
+    const a={...structuredClone(cur),workouts:[workout('a')]};
+    const b={...structuredClone(cur),workouts:[workout('b')]};
+    a._ts=stampChange(cur,a,1800000000001); b._ts=stampChange(cur,b,1800000000002);
+    // stampChange mutates state and returns its timestamp; use actual upstream merge.
     const results=await Promise.all([a,b].map(state=>put('alpha',{baseRev:1,baseWid:first.data.wid,stamped:true,state})));
     assert.deepEqual(results.map(r=>r.status).sort(),[200,409]);
     const loser=results.findIndex(r=>r.status===409),conflict=results[loser].data;
@@ -48,6 +49,7 @@ test('Phase 2 local DO: transactions, actual client merge, corruption, schema, i
     const large=await put('alpha',big);assert.equal(large.status,200);
     assert.equal((await get('alpha')).data.state.notes,big.state.notes);
     assert.equal((await put('alpha',{state:{notes:'x'.repeat(MAX_BODY)}})).status,413);
+    console.log('PHASE2_STORAGE_METRICS_BEFORE_RESTART',JSON.stringify((await get('alpha','metrics')).data));
     await stop();await start();
     assert.equal((await get('alpha')).data.state.notes,big.state.notes);
     assert.equal((await rev('alpha')).data.wid,large.data.wid);

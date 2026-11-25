@@ -57,11 +57,16 @@ test('actual pinned Node backend vs Phase 2 Worker: wire and stored state differ
     }
     // A legacy writer over the current revision omits a retained unknown field. Compare actual
     // stored/returned revision rather than assuming both advance by one.
+    const seeded={state:{_ts:450,workouts:[],routines:[],futureStorageField:{kept:true}},stamped:true};
+    const seedNode=await callNode('/api/data','PUT',seeded),seedWorker=await cf('state','PUT',seeded);
+    assert.equal(seedNode.status,200);assert.equal(seedWorker.status,200);ids.set(seedNode.data.wid,seedWorker.data.wid);await check();
     const cur=await callNode('/api/data');const rev=cur.data.rev;
     const body={baseRev:rev,baseWid:cur.data.state._wid,state:{_ts:500,workouts:[],routines:[]}};
     const a=await callNode('/api/data','PUT',body),b=await cf('state','PUT',normalize(body));
     assert.equal(a.status,200);assert.equal(b.status,200);ids.set(a.data.wid,b.data.wid);
     assert.deepEqual(normalize(strip(a)),strip(b));await check();
-    console.log('PHASE2_DIFFERENTIAL_REV',a.data.rev,(await callNode('/api/data/rev')).data.rev);
+    const stored=await callNode('/api/data/rev');assert.equal(stored.data.rev,a.data.rev+1);
+    assert.deepEqual((await cf()).data.state.futureStorageField,{kept:true});
+    console.log('PHASE2_DIFFERENTIAL_REV',a.data.rev,stored.data.rev);
   }finally{await runner.cleanup();if(child&&child.exitCode===null){const done=once(child,'exit');child.kill('SIGKILL');await done;}await rm(dir,{recursive:true,force:true});}
 });
