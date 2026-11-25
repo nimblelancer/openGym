@@ -62,6 +62,14 @@ test('Phase 2 local DO: transactions, actual client merge, corruption, schema, i
       assert.equal((await rev(id)).status,503);
       assert.equal((await put(id,{state:base})).status,503);
     }
+    // Upstream legacy stamping can expand two individually valid writes beyond the storage cap.
+    const bigLegacy={...base,legacyHuge:'x'.repeat(5*1024*1024-2048)};
+    const betaWrite=await put('beta',{state:bigLegacy,stamped:true});assert.equal(betaWrite.status,200);
+    const betaRev=await rev('beta');
+    const expanded=await put('beta',{baseRev:betaRev.data.rev,baseWid:betaRev.data.wid,state:{...base,newHuge:'x'.repeat(4*1024*1024)}});
+    assert.equal(expanded.status,413);
+    assert.deepEqual((await rev('beta')).data,betaRev.data);
+    assert.equal((await get('beta')).data.state.legacyHuge,bigLegacy.legacyHuge);
     const state={...base,_rev:9,_wid:'1234567890abcdef',_wids:['0000000000000001'],resetAt:12,resetIds:{workouts:['old']},deleted:{workouts:{old:12}}};
     const digest=createHash('sha256').update(JSON.stringify(state)).digest('hex');
     const snapshot={schema:1,profile:'seed',state,digest};
@@ -75,6 +83,9 @@ test('Phase 2 local DO: transactions, actual client merge, corruption, schema, i
     assert.equal((await imp('seed')).status,200);
     assert.deepEqual((await get('seed','inspect')).data.state,state);
     assert.equal((await imp('seed')).data.identical,true);
+    assert.deepEqual((await get('seed','export')).data,snapshot);
+    assert.equal((await get('schema','export')).status,404);
+    assert.equal((await get('corrupt','export')).status,503);
     const newer={...state,_rev:10};const changed={...snapshot,state:newer,digest:createHash('sha256').update(JSON.stringify(newer)).digest('hex')};
     assert.equal((await imp('seed',changed)).status,409);
     assert.equal((await imp('restore',changed)).status,400);

@@ -9,7 +9,7 @@ export default {async fetch(req,env){
   const u=new URL(req.url);
   if(!['localhost','127.0.0.1'].includes(u.hostname))return out({error:'local only'},403);
   if(req.method==='GET'&&u.pathname==='/__poc/health')return out({ok:true});
-  const m=u.pathname.match(/^\/__storage\/(alpha|beta|seed|corrupt|meta|schema)\/(state|rev|import|metrics|fault|inspect|damage|schema)$/);
+  const m=u.pathname.match(/^\/__storage\/(alpha|beta|seed|corrupt|meta|schema)\/(state|rev|import|export|metrics|fault|inspect|damage|schema)$/);
   if(!m||!allowed.has(m[1]))return out({error:'not found'},404);
   return env.STORE.get(env.STORE.idFromName('phase2-synthetic')).fetch(req);
 }};
@@ -24,6 +24,7 @@ export class StorageFixture extends DurableObject{
       if(op==='state'&&req.method==='GET')r=stateResponse(await this.store.read(id));
       else if(op==='rev'&&req.method==='GET')r=revisionResponse(await this.store.revision(id));
       else if(op==='state'&&req.method==='PUT')r=await this.store.compareAndWrite(id,await readBody(req),{now:FIXED});
+      else if(op==='export'&&req.method==='GET')r=await this.store.exportSnapshot(id);
       else if(op==='import'&&req.method==='POST'){const b=await readBody(req,MAX_STORED+1024*1024);r=await this.store.importSnapshot(id,b.snapshot,b.mode,{now:FIXED,fault:b.fault});}
       else if(op==='fault'&&req.method==='POST'){const b=await readBody(req);r=await this.store.compareAndWrite(id,b.body,{now:FIXED,fault:b.fault});}
       else if(op==='metrics'&&req.method==='GET')r={status:200,body:{...this.store.metrics}};

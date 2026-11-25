@@ -1,0 +1,13 @@
+# Phase 2 implementation contract (local synthetic harness)
+Baseline upstream e4a68a9. See PHASE_02.md for acceptance matrix.
+## Source inventory
+- api/server.js reads db.json users and credentials, subscription/invite records and separate state-<uid>.json documents. api/test/server-data-rev.test.js creates a temporary secret, synthetic users, empty creds/subs/invites; differential test follows this fixture pattern. Neither db.json nor secret, credentials, sessions, media or actual users are imported into the Worker. Only synthetic state documents are transferred.
+- state snapshot: {schema:1,profile,state,digest}; digest is SHA-256 over UTF-8 JSON.stringify(state), not an authentication signature. Trusted profile identity is supplied by the local harness, never inferred from the snapshot. Real backup/restore and authentication belong to later phases.
+## Interface and SQL
+StateStore async read/revision/compareAndWrite/exportSnapshot/importSnapshot. SQL writes use transactionSync, chunk ordering verified, metadata integrity hash checked. 512 KiB chunks; maximum stored JSON 8 MiB (intentional safety deviation), request body 5 MiB, explicit 413 on over-limit; no truncation. Revision query loads only metadata and corruption flag, never chunks. Undetected chunk corruption cannot be discovered by revision alone; full read/write detects and persists quarantine. Unknown schema rejected.
+## Compatibility
+Actual upstream Node differential uses fixed clock and maps only generated write IDs. Upstream stampPut and frontend mergeStates/stampChange are reused unmodified. Keep optional legacy baseRev/baseWid behavior, 409 payload, server-owned write ID, response revision vs actual stored revision, reset/deletion semantics, unknown keys, malformed entries filtering, active exclusion, hidden bookkeeping. Missing state is null; known corrupt/unavailable returns 503 including revision (deliberate safety difference). Output size cap may reject a write upstream accepts; documented and tested.
+## Import policy
+seed-dry-run never creates profile; seed imports only a missing profile, identical existing data is idempotent, different existing data 409. Unsupported restore mode 400. No live rewind. Full account/media backup and safe live restore remain Phase 6.
+## Test boundary
+Separate wrangler.storage.jsonc only, loopback, fixed synthetic profile names, explicit fault and inspect endpoints. Never deploy this harness or expose these endpoints. Production authentication and API routes not implemented. GNU time reports runner process/child CPU and maximum RSS, not hosted or per-request workerd resource metrics; SQL metrics and DO wall-clock separate. All acceptance results must come from actual CI logs.

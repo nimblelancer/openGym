@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 set -euo pipefail
-# Whole test process tree elapsed/user/system and peak RSS reported by GNU time.
+# GNU time reports command/child elapsed, CPU and maximum RSS (not sum of process peaks).
 # These are runner/process measurements, not per-request workerd or hosted CPU billing.
 mkdir -p reports
 if [ -x /usr/bin/time ]; then

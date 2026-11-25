@@ -57,6 +57,13 @@ export class StateStore {
       });
     }catch(e){const k=this.error(id,e).kind;return k==='too_large'?fail(413,'state too large after stamping'):fail(503,'state unreadable');}
   }
+  async exportSnapshot(id){
+    const r=await this.read(id);
+    if(r.kind==='missing')return fail(404,'profile not synced');
+    if(r.kind!=='ok')return fail(503,'state unreadable');
+    const e=encode(r.state);
+    return {status:200,body:{schema:1,profile:id,state:r.state,digest:e.digest}};
+  }
   async importSnapshot(id,snapshot,mode,ctx={}){
     if(!record(snapshot)||snapshot.schema!==1||snapshot.profile!==id||!record(snapshot.state)||!['seed-dry-run','seed'].includes(mode))return fail(400,'invalid snapshot or mode');
     const s=snapshot.state;
