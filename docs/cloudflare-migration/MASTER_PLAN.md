@@ -1,7 +1,7 @@
 # openGym Cloudflare migration — master plan
 
 Date: 2026-11-25. Baseline: e4a68a94c42a3c17cbd560d66ce2e46a7048ab99 (v1.4.5). Branch: feat/cloudflare-migration.
-Status: Phase 1 CLOSED for local functional POC only (final locked-install CI 45648776762 SUCCESS); CPU/peak-memory qualification remains open. Phase 2 plan ready, implementation NOT STARTED. No production approval.
+Status: Phase 1 CLOSED for local functional POC only (final locked-install CI 45648776762 SUCCESS); CPU/peak-memory qualification remains open. Phase 2 storage implementation started; local CI validation pending. No production approval.
 
 ## Goals
 - Run a private, single-owner openGym deployment within the Cloudflare Free plan and the account's remaining quotas.
