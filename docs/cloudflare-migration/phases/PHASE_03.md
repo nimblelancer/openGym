@@ -2,7 +2,7 @@
 
 Date: 2026-11-25. Upstream pinned e4a68a94c42a3c17cbd560d66ce2e46a7048ab99 (v1.4.5).
 Phase 2 tested code baseline 51c7b63a4b07c8073a3936099c0809fff0556f99; CI 45651255730 SUCCESS. Branch feat/cloudflare-migration.
-Status: PLANNED / NOT STARTED. Phase 2 local acceptance closed. Separate explicit owner approval required to implement. No remote resources, actual data, production deploy or main merge.
+Status: IMPLEMENTATION STARTED / UNVALIDATED. Phase 2 local acceptance closed; owner authorized Phase 3 local implementation. No remote resources, actual data, production deploy or main merge.
 
 ## 1. Objective and scope
 Implement an isolated Fetch-native local API that authenticates a private single owner, supports WebAuthn browser login and official mobile pairing protocol, and protects the Phase 2 storage layer with verified identity. Match upstream HTTP method, path, payload, status, stable error codes and relevant headers for the supported route subset. Actual installed mobile app end-to-end acceptance is Phase 4. Do not import the monolithic Node server, expose Phase 1/2 synthetic/fault/inspect routes, or modify original api/, frontend/, Docker, cloudflare/ failover, Learning Hub or lockfile without documented necessity.
@@ -79,3 +79,6 @@ All P3 checks NOT RUN. Real physical passkey compatibility is distinct from virt
 Stop on auth bypass, session escalation, replay, race-created duplicate owner, cross-profile read/write, unsafe account deletion, false success, loss of acknowledged state or incompatibility with required client wire contracts. Fix with tests; do not disable auth checks or weaken crypto for Free plan. Revert local feature commits if needed; never rewind live state. No real data, remote deploy, main merge or Learning Hub changes.
 ## 8. Deliverables
 Route inventory/threat model, versioned auth storage and session modules, passkey/pairing/core API local code, local test configuration, synthetic and browser verification fixtures, differential/security/transaction tests, dedicated CI evidence, validation matrix and progress report. This document is only a proposal and authorizes no implementation.
+
+## Phase 3 implementation initial checkpoint
+Added 170-operation inventory, isolated local API config, auth session primitives, SQLite auth schema/one-shot challenges and codes, private bootstrap, signed passkey verification, session/step-up, pairing, device-link/passkey management, authenticated state/revision, nudge, logout and atomic account deletion. State mutation composes Phase 2 current/transition/save within the same synchronous transaction as session-version recheck. No remote operations. Candidate implementation only; tests, browser evidence, exact differential and full caller audit pending. P3-01–P3-21 NOT ACCEPTED. Explicitly deferred activity, exact error mapping and per-source rate limits pending review. No Phase 4.
