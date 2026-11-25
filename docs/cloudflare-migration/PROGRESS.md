@@ -222,3 +222,48 @@ All PRIOR PASS entries require final-code review. No Phase 3 closure, no Phase 4
 
 ### Latest auth CI evidence
 Run 45653658471, tested code edac5325: auth-core job 139344472303 SUCCESS 7/7, no failures/skips, all four PHASE3 markers PASS including extended passkey/device-link differential and origin/RP mismatch checks. POC/storage SUCCESS; API/frontend still running at latest inspection. P3-08 and P3-18 now have expanded differential evidence on latest code; P3-18 remains subject to exact supported-route error/header review and documented deviations. P3-05 origin/RP stable-code negative cases PASS, wrong-purpose coverage open. P3-13 unhealthy JSON/missing secret PASS. P3-20 and P3-21 remain open. Physical passkey and additional explicit negative cases are not waived. No code changes or deployment in this update.
+
+## Phase 3 Hotfix 001 review / security hardening — 2026-11-25
+Status: OPEN; physical passkey and final latest-code integrated CI remain gates.
+- All six initial runs reviewed. 45652581816 four baseline jobs SUCCESS (auth absent); 45652711692 and 45653016329 failed auth only (revoked bearer 403 vs 401); 45653122116, 45653369301 and 45653658471 completed SUCCESS all five jobs.
+- Run [45653658471](https://github.com/nimblelancer/openGym/actions/runs/45653658471), edac5325: POC 4/4 (+2 repeated precheck), storage 6/6, auth 7/7, upstream API 1084/1084, frontend 10101/10101 (898 files), Vite 2.00s. Total 11202 main-suite tests. Four artifacts downloaded and ZIP members independently read:
+  - 15042510967 asset manifest SHA-256 f7924cac4ae9a010184994febf7360d5e4f3dda98cba7bf57a75d064ef86b4f2; 13345 files, 242978231 bytes, largest 2091275 bytes, same as Phase 2.
+  - 15040243978 lockfile SHA-256 3bf5809d991c8c036e1001c4ec7af25bcfecbf0aa9ede2e320591996f2b4fddc; Git blob 0cde099db0392a2583158df6911b3180d20698be, v3/156 records, Wrangler 4.168.0, SimpleWebAuthn 13.3.3; unchanged.
+  - 15041927584 storage profile SHA-256 86274d842cc59f644c0467796d3c4139e7724e73fbc3a09de0d523a022c39c59; user 6.29s, system 1.17s, elapsed 17.95s, max RSS 305908 KiB, exit 0.
+  - 15041018992 auth profile SHA-256 dfde72450ce84278ba2551e64a844e6a42859d287b1bff639fa2d9c8e8e5d821; user 18.38s, system 3.49s, elapsed 53.34s, max RSS 314036 KiB, exit 0.
+- Hotfix 002 62d58496: key fingerprint epoch (domain-separated HMAC) atomically bumps session version and drops pending challenges/codes on rotation, preserves credentials and state; login challenge bound to owner/session version; wrong-purpose, normalized/encoded route and unsupported schema tests; suppress private Wrangler logs on startup failure. [45656055740](https://github.com/nimblelancer/openGym/actions/runs/45656055740) SUCCESS 5/5 jobs, auth 8/8, PHASE3_AUTH_ROTATION_SCHEMA PASS. Artifact 15044000175 independently read: SHA-256 792204ffb1e64e22dddc04a32619d471a312263ad9bd4d7d1f5a37b15312ca7e; user 15.78s/system 3.09s/wall 41.29s/max RSS 318916 KiB/45%/exit 0. Log scan found zero full session-token-shaped strings or manual setup-code print line; not proof of every possible leak. Aggregate GNU time includes browser/runner/children, not per-request or hosted CPU/heap. No controlled benchmark.
+- 0b1f61db: deferred module caller audit, JSON/no-store/header assertions, 64 KiB bound, manual localhost UI/proxy/guide. Run 45656416258 auth 8/8, POC/storage/API SUCCESS, frontend pending at review. No core runtime change in this commit.
+- a4cd8599: manual UI browser smoke fixture added; run 45656532011 auth failure from duplicate launchError declaration; remaining seven tests passed.
+- bdf9a64c: require affirmative same-origin Origin or same-origin Fetch Metadata for browser cookie/sign-in mutations; valid acting kind-b bearer and pair redemption remain exempt; reject contradictory site metadata. Deliberate deviation from upstream non-browser fallback. Added 256 pending-challenge cap test and audit metadata schema/bounds check. Run 45656701583 auth 6/8: duplicate fixture declaration and offline SQLite database lock. Core CSRF and upstream differential passed. 
+- b0272f38: corrected duplicate variable and canonical Origin headers, CI syntax check. Run 45656865169 auth 8/9: core, direct Chrome virtual, differential, rollback and rotation all PASS including new CSRF and limits tests. Manual UI readiness probe failed 403 because fetch Host override did not match localhost guard.
+- 13c104fa: bounded 5s SQLite busy timeout and close probe handles even on error, no assertion retry or suppression; run 45657121938 in progress.
+- ab4e3782: use localhost authority directly for manual smoke readiness, retain Host guard. Latest code/test commit; integrated CI not yet verified. No production code changes since bdf9a64c.
+- Manual helper is a separate loopback Node proxy/UI; no new integrated Worker routes, random synthetic local secrets and temporary persistence, no remote resources. Manual physical owner evidence NOT RUN; wait for browser smoke PASS before asking owner to execute. See PHASE_03_MANUAL_PASSKEY.md. User acceptance not requested until latest CI green and checklist complete.
+- Scope review: all 170 operations enumerated, 25 supported candidates, 145 explicit deferred. Core caller sources and representative deferred family callers inspected; individual deferred operation call graph and actual mobile/client handling remain release gates. Upstream admin/owner UI may expose unavailable routes; explicitly handle in Phase 5. Local source-IP rate limit unavailable; fixed global/owner buckets only, hosted abuse policy remains open. Exact byte-for-byte error/header parity not claimed, documented stable status/codes and security deviations. No auth bypass, no skip of failed tests, no Phase 4 or production deployment.
+
+### Current P3 matrix (latest runtime evidence b0272f38 / prior completed integrated 62d58496; final retest required)
+| ID | Evidence | Status |
+|---|---|---|
+| P3-01 | 170 operations + core caller mapping + representative deferred families; exhaustive deferred call graph release gate | LOCAL PASS / release gate |
+| P3-02 | isolated API, no fixture routes, invalid secret 503 | PRIOR PASS |
+| P3-03 | concurrent bootstrap, schema reject/recover, rotation/restart and closed signup | PRIOR PASS |
+| P3-04 | genuine synthetic + direct Chrome virtual PASS; manual physical not run | VIRTUAL PASS / MANUAL OPEN |
+| P3-05 | wrong purpose/expiry/replay/origin/RP/UV/signature, invalidated pending proof after revoke/rotation | PRIOR PASS |
+| P3-06 | duplicate registration and same nonzero counter race | PRIOR PASS |
+| P3-07 | cookie flags unit, HMAC tampering/expiry/kind/disabled and duplicate/mixed credentials | PRIOR PASS LOCAL |
+| P3-08 | add/list/rename/remove, last way in, device-link differential | PRIOR PASS |
+| P3-09 | single-use/TTL/parallel redeem, step-up, bounded local rates, source limits deferred | PRIOR PASS LOCAL |
+| P3-10 | aged bearer renewal, no kind-c upgrade/delete, rotation/restart | PRIOR PASS |
+| P3-11 | browser logout and global revoke, pending proof/pair/link cancellation | PRIOR PASS |
+| P3-12 | affirmative origin/missing/conflicting metadata and encoded/normalized path authorization | PRIOR PASS |
+| P3-13 | health/config/unknown/disabled JSON, safe failure | PRIOR PASS |
+| P3-14 | identity protected data/rev and conflict | PRIOR PASS |
+| P3-15 | revoke/write race, offline trigger rollback | PRIOR PASS |
+| P3-16 | proof/kind/confirmation, atomic delete and closed signup | PRIOR PASS |
+| P3-17 | nudge/ephemeral activity and upstream differential | PRIOR PASS |
+| P3-18 | actual Node core differential including passkey/device-link lifecycle and selected JSON/header checks; documented deviations, not exhaustive byte parity | LOCAL PASS / release gate |
+| P3-19 | 64KiB auth body, 256 challenge bound, fixed buckets, metadata-only bounded audit, aggregate profiling and limited log scan; hosted/per-request limits open | PRIOR PASS LOCAL |
+| P3-20 | latest commit ab4e3782 integrated CI pending | OPEN |
+| P3-21 | owner physical passkey checklist, final branch/safety and acceptance | OPEN |
+
+No closure. Eighteen scoped local criteria have prior passing evidence (not final-code acceptance); P3-04, P3-20 and P3-21 are open. Final CI, manual smoke and physical verification required. Phase 4 not implemented.

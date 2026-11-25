@@ -21,3 +21,6 @@ Status: NOT RUN by owner. This is not production or Phase 4. Use Node 26 as CI, 
 Report browser+version, OS, authenticator type, PASS/FAIL for M3-01..09, exact status/error category if failed. Do not send tokens, setup/pair codes, credential IDs, authenticator material or full logs. Do not lower UV requirement to make pass. If browser prompts are virtual, mark virtual only. Physical browser acceptance is distinct from official app pairing Phase 4.
 ## Cleanup
 Ctrl+C in terminal stops proxy/Worker and removes disposable local persistence. Close separate profile. Remove only the test passkey named Phase 3 manual fixture under localhost in your passkey manager, if it was saved; verify correct entry first. Do not remove unrelated credentials or real passkeys. No changes to Cloudflare or Learning Hub.
+
+## Automated harness readiness
+Direct Chrome virtual passkey ceremony has passed. Separate manual UI/proxy Chrome smoke had a duplicate variable followed by a localhost Host readiness probe failure; both fixture changes committed, latest retest pending. Owner should run only after that smoke passes and latest code is reviewed. This is not a physical passkey acceptance result.
