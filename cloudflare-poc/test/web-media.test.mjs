@@ -3,8 +3,10 @@ import assert from 'node:assert/strict';
 import {createHash,randomBytes} from 'node:crypto';
 import {readFile,readdir} from 'node:fs/promises';
 import {join} from 'node:path';
+import {request} from 'node:http';
+import {setTimeout as sleep} from 'node:timers/promises';
 import {DatabaseSync} from 'node:sqlite';
-import {MediaLifecycle,GRACE_MS} from '../src/media-lifecycle.js';
+import {MediaLifecycle,GRACE_MS,DELETE_BATCH,SWEEP_BATCH} from '../src/media-lifecycle.js';
 import {localRunner} from './local-runner.mjs';
 import {authenticator} from './auth-fixture.mjs';
 import {inspect,parseRange,boundedBytes,handleMedia,inventory} from '../src/media.js';
@@ -29,6 +31,22 @@ test('bounded input, content sniff, dimensions, declared category, duration and 
   assert.deepEqual(parseRange('bytes=-5',20),{offset:15,length:5});
   assert.deepEqual(parseRange('bytes=15-',20),{offset:15,length:5});
   for(const bad of ['bytes=20-','bytes=3-2','bytes=0-1,5-6','bytes=-0','bytes=-9999999999999999999999999999999999'])assert.equal(parseRange(bad,20),false);
+});
+test('bounded upload rejects incomplete, oversized, stalled and trickling streams',async()=>{
+  const req=(body,headers={})=>new Request('http://localhost/api/media/'+hash,{method:'PUT',body,headers,duplex:'half'});
+  const chunks=(parts)=>new ReadableStream({start(c){for(const p of parts)c.enqueue(p);c.close();}});
+  assert.deepEqual(await boundedBytes(req(chunks([image.subarray(0,3),image.subarray(3)])),image.length),image);
+  await assert.rejects(boundedBytes(req(chunks([image.subarray(0,4)]),{'content-length':String(image.length)}),image.length),e=>e.status===400);
+  await assert.rejects(boundedBytes(req(chunks([image]),{'content-length':'4'}),image.length),e=>e.status===400);
+  assert.equal(await boundedBytes(req(chunks([image,image])),image.length),null);
+  let canceled=false;
+  const stalled=new ReadableStream({start(c){c.enqueue(image.subarray(0,1));},cancel(){canceled=true;}});
+  await assert.rejects(boundedBytes(req(stalled),image.length,{idleMs:15,totalMs:200}),e=>e.status===408);
+  assert.equal(canceled,true);
+  let timer,stopped=false;
+  const trickle=new ReadableStream({start(c){timer=setInterval(()=>c.enqueue(Uint8Array.of(1)),3);},cancel(){clearInterval(timer);stopped=true;}});
+  try{await assert.rejects(boundedBytes(req(trickle),4096,{idleMs:100,totalMs:35}),e=>e.status===408);assert.equal(stopped,true);}finally{clearInterval(timer);}
+  console.log('PHASE5_BOUNDED_UPLOAD_STREAMS PASS');
 });
 test('media failure and quota paths never acknowledge a missing write',async()=>{
   let live=true,put=0;
@@ -82,8 +100,22 @@ test('GC marks survive restart, preserve references, and retry failed deletion',
     repo.tx(()=>l.begin(uid));assert.equal(repo.user(uid).disabled,1);
     fail=true;let finalized=0;await assert.rejects(l.finish(uid,()=>{finalized++}),/injected/);
     assert.equal(l.pending(),uid);assert.equal(finalized,0);assert.ok(objects.has(key));
-    fail=false;l=make();await l.finish(uid,id=>{repo.q('DELETE FROM auth_users WHERE id=?',id);finalized++});
-    assert.equal(l.pending(),null);assert.equal(finalized,1);assert.equal(objects.size,0);assert.equal(repo.user(uid),undefined);
+    fail=false;l=make();
+    // A bulk-delete backend can delete only a subset before throwing. No finalization
+    // or cross-owner cleanup, even when recovery needs several requests.
+    const foreign='private/v1/otherowner123456/'+hash;
+    objects.set(foreign,{key:foreign,size:1,uploaded:new Date(now),etag:'foreign'});
+    for(let n=0;n<DELETE_BATCH+2;n++){const k='private/v1/'+uid+'/'+sha('batch-'+n);objects.set(k,{key:k,size:1,uploaded:new Date(now),etag:'batch-'+n});}
+    const originalDelete=bucket.delete;
+    bucket.delete=async keys=>{objects.delete([keys].flat()[0]);throw Error('partial batch failure');};
+    const finalize=id=>{repo.q('DELETE FROM auth_users WHERE id=?',id);finalized++;};
+    await assert.rejects(l.finish(uid,finalize),/partial batch failure/);
+    assert.equal(l.pending(),uid);assert.equal(finalized,0);assert.equal(repo.user(uid).disabled,1);
+    bucket.delete=originalDelete;l=make();
+    assert.equal(await l.finish(uid,finalize),false);assert.equal(finalized,0);assert.equal(l.pending(),uid);
+    assert.equal(await l.finish(uid,finalize),true);
+    assert.equal(l.pending(),null);assert.equal(finalized,1);assert.equal(objects.size,1);assert.ok(objects.has(foreign));assert.equal(repo.user(uid),undefined);
+    console.log('PHASE5_PARTIAL_BATCH_DELETE_RECOVERY PASS');
     console.log('PHASE5_LIFECYCLE_FAULT_RECOVERY PASS');
   }finally{db.close();}
 });
@@ -136,6 +168,38 @@ test('actual local Worker: SPA, private R2, authenticated media contract and res
     assert.equal((await put(Buffer.alloc(2*MB+1))).status,413);
     assert.equal((await post('/api/media/missing',{hashes:['bad']},auth())).status,400);
     assert.equal((await data(await post('/api/media/missing',{hashes:[hash,other,hash]},auth()))).missing.length,2);
+    // Hold a real loopback HTTP upload in flight, without exposing a fault endpoint.
+    // Observe admission via a second authenticated request rather than a fixed sleep.
+    let heldResponse=null,heldError=null;
+    const held=request(runner.base+path,{method:'PUT',headers:{cookie,origin:runner.origin,'content-type':'image/png','content-length':image.length,'x-opengym-account':uid}},res=>{heldResponse=res.statusCode;res.resume();});
+    held.on('error',e=>{heldError=e;});held.setTimeout(12000,()=>held.destroy(Error('held upload timeout')));
+    held.write(image.subarray(0,8));
+    try{
+      let admitted=false;
+      for(let i=0;i<40;i++){
+        const probe=await post('/api/media/missing',{hashes:[hash]},auth());
+        if(probe.status===429){assert.equal((await probe.json()).code,'busy');admitted=true;break;}
+        assert.equal(probe.status,200);assert.deepEqual((await probe.json()).missing,[hash]);await sleep(50);
+      }
+      assert.ok(admitted,'partial HTTP upload never acquired media admission');
+      const concurrent=await put();assert.equal(concurrent.status,429);assert.equal((await concurrent.json()).code,'busy');
+      const stateBusy=await raw('/api/data','PUT',JSON.stringify({state:{workouts:[],routines:[]},baseRev:0}),{'content-type':'application/json',...auth()});
+      assert.equal(stateBusy.status,503);assert.equal((await stateBusy.json()).code,'busy');
+      const sweepBusy=await post('/api/media/sweep',{},auth());assert.equal(sweepBusy.status,429);assert.equal((await sweepBusy.json()).code,'busy');
+      const deleteBusy=await post('/api/account/delete',{name:'Synthetic Owner'},auth());assert.equal(deleteBusy.status,409);
+      assert.equal((await data(await raw('/api/data','GET',undefined,auth()))).rev,0);
+      assert.equal((await raw('/api/me','GET',undefined,auth())).status,200);
+      held.destroy(Error('synthetic interrupted upload'));
+      let available=false;
+      for(let i=0;i<100;i++){
+        const probe=await post('/api/media/missing',{hashes:[hash]},auth());
+        if(probe.status===200){assert.deepEqual((await probe.json()).missing,[hash]);available=true;break;}
+        assert.equal(probe.status,429);await probe.arrayBuffer();await sleep(100);
+      }
+      assert.ok(available,'interrupted upload did not release admission');
+      assert.ok(heldResponse===null||heldResponse>=400);assert.ok(heldError||held.destroyed);
+      console.log('PHASE5_CONCURRENT_INTERRUPTED_UPLOAD PASS');
+    }finally{held.destroy();}
     const fresh=await data(await put(),201);assert.deepEqual(fresh,{ok:true,hash,mime:'image/png',size:image.length,existed:false});
     assert.equal((await data(await put())).existed,true);
     const m=await data(await post('/api/media/missing',{hashes:[hash,other,hash]},auth()));assert.deepEqual(m.missing,[other]);assert.deepEqual(m.usage,{bytes:image.length,count:1,quotaBytes:200*MB});
