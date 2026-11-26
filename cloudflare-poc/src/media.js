@@ -1,7 +1,7 @@
 // Phase 5 local-only candidate; no remote bucket. No automatic destructive GC yet.
 import { createHash } from 'node:crypto';
-import { sniffKind,imageDims,inspectGif,inspectMp4,inspectWebm } from '../../../frontend/src/lib/media-sniff.js';
-import { MEDIA_MIMES,HASH_RE } from '../../../frontend/src/lib/media-refs.js';
+import { sniffKind,imageDims,inspectGif,inspectMp4,inspectWebm } from '../../frontend/src/lib/media-sniff.js';
+import { MEDIA_MIMES,HASH_RE } from '../../frontend/src/lib/media-refs.js';
 import { readBody } from './storage/codec.js';
 const MB=1024*1024;
 export const MEDIA_CONFIG={imageMB:2,gifMB:8,videoMB:8,videoSec:60,audioMB:2,quotaMB:200,workouts:true,days:true,sets:true,sounds:false,avatar:true,builtin:true};
@@ -15,7 +15,7 @@ const prefix=uid=>'private/v1/'+uid+'/';
 const path=(uid,h)=>prefix(uid)+h;
 export const mediaRoute=(method,p)=>method==='POST'&&['/api/media/missing','/api/media/sweep'].includes(p)||['GET','PUT','HEAD'].includes(method)&&/^\/api\/media\/[a-f0-9]{64}$/.test(p);
 export async function inventory(bucket,uid){
-  const r=await bucket.list({prefix:prefix(uid),limit:COUNT+1});
+  const r=await bucket.list({prefix:prefix(uid),limit:COUNT+1,include:['httpMetadata','customMetadata']});
   if(r.truncated||r.objects.length>COUNT||r.objects.some(o=>!HASH_RE.test(o.key.slice(prefix(uid).length))))throw Error('media inventory invalid');
   return {objects:r.objects,usage:{bytes:r.objects.reduce((n,o)=>n+o.size,0),count:r.objects.length,quotaBytes:QUOTA}};
 }
