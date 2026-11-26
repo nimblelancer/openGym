@@ -56,7 +56,7 @@ test('all supported media reference locations and local-only set behavior',()=>{
 });
 test('actual local Worker: SPA, private R2, authenticated media contract and restart',{timeout:180000},async()=>{
   const AUTH_SECRET=randomBytes(32).toString('hex'),SETUP_CODE=randomBytes(32).toString('hex');
-  const runner=await localRunner('wrangler.web-media.jsonc',{health:'/api/health',privateLogs:true,vars:origin=>({AUTH_SECRET,SETUP_CODE,API_ORIGIN:origin,RP_ID:'localhost',P5_MEDIA:'1'})});
+  const runner=await localRunner('wrangler.web-media.jsonc',{health:'/api/health',privateLogs:true,syntheticDiagnostics:true,vars:origin=>({AUTH_SECRET,SETUP_CODE,API_ORIGIN:origin,RP_ID:'localhost',P5_MEDIA:'1'})});
   let cookie='',bearer='',uid='',count=0;
   const dev=authenticator({rp:'localhost',origin:runner.origin});
   const raw=async(p,method='GET',body,headers={})=>fetch(runner.base+p,{method,headers:{...(!['GET','HEAD','OPTIONS'].includes(method)?{origin:runner.origin}:{}),...headers},...(body===undefined?{}:{body}),signal:AbortSignal.timeout(30000)});
