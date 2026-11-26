@@ -265,6 +265,49 @@ it('actual upstream store: offline conflict, failed acknowledgements, revoke, st
   expect(ids((await home.get()).state)).toEqual(['owed','phone-offline','seed','web-edit'])
   expect(ids(store.getState().S)).toEqual(['owed','phone-offline','seed','web-edit'])
   expect(readFile('opengym-stash.json')?.[stashKey]||null).toBe(null)
+  // Each medium alone can retain a new stash even if the other holds stale data.
+  // Re-pair against the real Worker, not only a mocked API.
+  for(const durable of ['localStorage','native']){
+    const previous=await home.get(),newId='single-'+durable
+    const stale={ [stashKey]:{server:home.base,uid:home.uid,name:'Synthetic home',at:Date.now()+10000,state:clone(previous.state)} }
+    localStorage.setItem('gym_stash',JSON.stringify(stale))
+    h.files.set('DATA/opengym-stash.json',JSON.stringify(stale))
+    mode='offline'
+    store.getState().update(s=>{s.workouts.push(work(newId,'2026-09-07'))})
+    await store.getState().pushState()
+    mode='online';await home.revoke()
+    await store.getState().pushState()
+    const storage=localStorage
+    let refusedLocal=0
+    h.rejectedNativeStashWrites=0
+    if(durable==='localStorage')h.refuse.add('opengym-stash.json')
+    else vi.stubGlobal('localStorage',{
+      get length(){return storage.length},key:i=>storage.key(i),getItem:k=>storage.getItem(k),
+      removeItem:k=>storage.removeItem(k),clear:()=>storage.clear(),
+      setItem(k,v){if(k==='gym_stash'){refusedLocal++;throw Error('fixture storage full')}storage.setItem(k,v)}
+    })
+    try{
+      expect(await store.getState().disconnectServer({force:true})).toMatchObject({stashed:true})
+      const fresh=durable==='localStorage'?JSON.parse(storage.getItem('gym_stash')):readFile('opengym-stash.json')
+      const old=durable==='localStorage'?readFile('opengym-stash.json'):JSON.parse(storage.getItem('gym_stash'))
+      expect(old).toEqual(stale)
+      expect(fresh[stashKey].at).toBeGreaterThan(stale[stashKey].at)
+      expect(ids(fresh[stashKey].state)).toContain(newId)
+      expect(ids(await store.getState().keptState(home.base,home.uid))).toContain(newId)
+      if(durable==='localStorage')expect(h.rejectedNativeStashWrites).toBeGreaterThan(0)
+      else expect(refusedLocal).toBeGreaterThan(0)
+      expect(readFile('opengym-remote.json').mode).toBe('local')
+    }finally{
+      vi.stubGlobal('localStorage',storage);h.refuse.delete('opengym-stash.json')
+    }
+    await home.login()
+    await connect(home)
+    expect(ids((await home.get()).state)).toContain(newId)
+    expect(ids(store.getState().S)).toContain(newId)
+    expect(readFile('opengym-stash.json')?.[stashKey]||null).toBe(null)
+    expect(localStorage.getItem('gym_stash')).toBeNull()
+  }
+  console.log('PHASE4_SINGLE_DURABLE_STASH_REPAIR PASS')
   // A fresh store with no localStorage recovers an unsent edit from the native file mirror.
   mode='offline';store.getState().update(s=>{s.workouts.push(work('mirror-only','2026-09-06'))})
   await store.getState().pushState();await vi.advanceTimersByTimeAsync(900)
