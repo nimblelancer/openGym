@@ -115,11 +115,14 @@ jobs:
         run: |
           target=src/lib/phase4-cloudflare.integration.test.jsx
           test ! -e "$target"
+          store=src/store/phase4-cloudflare.integration.test.jsx
+          test ! -e "$store"
           cp ../cloudflare-poc/test/mobile-client.integration.test.jsx "$target"
-          trap 'rm -f "$target"' EXIT
+          cp ../cloudflare-poc/test/mobile-store.integration.test.jsx "$store"
+          trap 'rm -f "$target" "$store"' EXIT
           mkdir -p ../cloudflare-poc/reports
           status=0
-          /usr/bin/time -v -o ../cloudflare-poc/reports/mobile-process-profile.txt node node_modules/vitest/vitest.mjs run "$target" || status=$?
+          /usr/bin/time -v -o ../cloudflare-poc/reports/mobile-process-profile.txt node node_modules/vitest/vitest.mjs run "$target" "$store" --maxWorkers=1 || status=$?
           cat ../cloudflare-poc/reports/mobile-process-profile.txt
           exit "$status"
       - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f

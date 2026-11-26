@@ -1,6 +1,6 @@
 // @vitest-environment happy-dom
 // Copied to frontend/src/lib in the disposable CI checkout only. Pinned client modules
-// and actual local HTTP backend; OS file storage and native network fallback are simulated.
+// and actual local HTTP backend; OS file storage and native plugin transport are simulated.
 import { it, expect, vi } from 'vitest'
 import { request } from 'node:http'
 import { resolve } from 'node:path'
@@ -10,9 +10,9 @@ import { authenticator } from '../../../cloudflare-poc/test/auth-fixture.mjs'
 import { config, issue, TTL } from '../../../cloudflare-poc/src/auth/session.js'
 const h = vi.hoisted(() => {
   vi.stubEnv('VITE_MOBILE','1')
-  return { files:new Map(), secure:new Map() }
+  return { files:new Map(), secure:new Map(), native:null }
 })
-vi.mock('@capacitor/core',()=>({Capacitor:{getPlatform:()=> 'android',isNativePlatform:()=>true},registerPlugin:()=>({})}))
+vi.mock('@capacitor/core',()=>({Capacitor:{getPlatform:()=> 'android',isNativePlatform:()=>true},registerPlugin:()=>({}),CapacitorHttp:{request:async opts=>{if(!h.native)throw Error('unexpected native call');return h.native(opts)}}}))
 vi.mock('@capacitor/filesystem',()=>({
   Directory:{Data:'DATA',LibraryNoCloud:'LIBRARY_NOCLOUD',Documents:'DOCUMENTS',Cache:'CACHE'},
   Encoding:{UTF8:'utf8'},
@@ -25,12 +25,12 @@ vi.mock('@capacitor/filesystem',()=>({
 }))
 vi.mock('./coach-secrets.js',()=>({secureGet:async k=>h.secure.get(k)||null,secureSet:async(k,v)=>h.secure.set(k,v),secureRemove:async k=>h.secure.delete(k)}))
 vi.mock('./oidc-app.js',()=>({phoneSignIn:async()=>{throw Error('OIDC deferred')}}))
-vi.mock('./capacitor-fetch.js',()=>({inAndroidApp:async()=>false,nativeFetch:async()=>{throw Error('native transport not simulated here')}}))
 import { api, setRemoteAuth, remoteAuth, setAccessHeaders } from './api.js'
 import { connect,loadRemote,renewToken,forgetRemote } from './remote.js'
 import { nativeLoad,nativeSave } from './mobile.js'
 import { mergeStates,stampChange } from './sync-merge.js'
 import { idsToCancel } from './nudge-check.js'
+import { _viaNativeForTests } from './api.js'
 const secret=()=>randomBytes(32).toString('hex')
 const clone=x=>JSON.parse(JSON.stringify(x))
 const work=(id,date)=>({id,d:date,start:Date.parse(date+'T10:00:00Z'),end:Date.parse(date+'T11:00:00Z'),entries:[]})
@@ -55,10 +55,10 @@ function httpFetch(url,init={}){
 it('actual mobile API/remote/merge modules: pair, persist, offline conflict, renewal and re-pair against Worker',async()=>{
   const AUTH_SECRET=secret(),SETUP_CODE=secret()
   const runner=await localRunner('wrangler.api.jsonc',{cwd:resolve('../cloudflare-poc'),health:'/api/health',privateLogs:true,vars:origin=>({AUTH_SECRET,SETUP_CODE,API_ORIGIN:origin,RP_ID:'localhost'})})
-  let offline=false,html=false,network=0,counter=0
+  let offline=false,html=false,forceNative=false,network=0,counter=0
   const dev=authenticator({rp:'localhost',origin:runner.origin})
   const cfg=config({AUTH_SECRET,SETUP_CODE,API_ORIGIN:runner.origin,RP_ID:'localhost'})
-  vi.stubGlobal('fetch',(url,init={})=>{network++;if(offline)return Promise.reject(Error('synthetic offline'));if(html)return Promise.resolve({ok:true,status:200,json:async()=>{throw Error('HTML')},text:async()=>'<html>not API</html>'});return httpFetch(url,init)})
+  vi.stubGlobal('fetch',(url,init={})=>{network++;if(offline||forceNative)return Promise.reject(Error('synthetic offline'));if(html)return Promise.resolve({ok:true,status:200,json:async()=>{throw Error('HTML')},text:async()=>'<html>not API</html>'});return httpFetch(url,init)})
   const owner=async(path,body,cookie)=>{
     const r=await httpFetch(runner.base+path,{method:body===undefined?'GET':'POST',headers:{origin:runner.origin,...(body===undefined?{}:{'content-type':'application/json'}),...(cookie?{cookie}:{})},...(body===undefined?{}:{body:JSON.stringify(body)})})
     if(!r.ok)throw Error('owner fixture '+path+' '+r.status)
@@ -77,6 +77,10 @@ it('actual mobile API/remote/merge modules: pair, persist, offline conflict, ren
     const pre=await httpFetch(runner.base+'/api/data',{method:'OPTIONS',headers:{origin:'capacitor://localhost','access-control-request-method':'PUT','access-control-request-headers':'authorization,content-type'}})
     expect(pre.status).toBe(204);expect(pre.headers.get('access-control-allow-origin')).toBe('capacitor://localhost');expect(pre.headers.get('access-control-allow-credentials')).toBe(null)
     expect(pre.headers.get('access-control-allow-headers').toLowerCase().includes('authorization')).toBe(true)
+    for(const origin of ['https://localhost','http://localhost']){
+      const p=await httpFetch(runner.base+'/api/data',{method:'OPTIONS',headers:{origin,'access-control-request-method':'PUT','access-control-request-headers':'authorization,content-type,cf-access-client-id,cf-access-client-secret'}})
+      expect(p.status).toBe(204);expect(p.headers.get('access-control-allow-origin')).toBe(origin)
+    }
     const code=await pair(cookie),user=await connect(runner.base,code),remote=await loadRemote()
     expect(user.id===reg.data.user.id).toBe(true);expect(remote.mode).toBe('remote');expect(remote.token===remoteAuth().headers.Authorization.slice(7)).toBe(true)
     await expect(connect(runner.base,code)).rejects.toMatchObject({code:'pair-invalid',status:400})
@@ -102,6 +106,18 @@ it('actual mobile API/remote/merge modules: pair, persist, offline conflict, ren
     const done=await api('/api/nudge-check?date=2026-09-02')
     expect(idsToCancel({date:'2026-09-02',reminder:[1000],nudge:[2000]},done)).toEqual([1000,2000])
     html=true;await expect(api('/api/data')).rejects.toMatchObject({code:'bad-response',status:200});html=false
+    await expect(put({workouts:[],notes:'x'.repeat(5*1024*1024)},0)).rejects.toMatchObject({status:413})
+    expect((await api('/api/data')).state.workouts.length).toBe(3)
+    // Actual upstream nativeFetch shim calls a mocked CapacitorHttp plugin which sends real HTTP.
+    let nativeCalls=0
+    h.native=async opts=>{
+      nativeCalls++;const r=await httpFetch(opts.url,{method:opts.method,headers:opts.headers,...(opts.data===undefined?{}:{body:typeof opts.data==='string'?opts.data:JSON.stringify(opts.data)})})
+      return {status:r.status,data:await r.text()}
+    }
+    forceNative=true;expect((await api('/api/me')).user.id===user.id).toBe(true)
+    forceNative=false;expect(nativeCalls).toBe(1)
+    expect((await api('/api/data')).state.workouts.length).toBe(3);expect(nativeCalls).toBe(2)
+    _viaNativeForTests.clear();h.native=null
     const aged=issue(cfg,{id:user.id,sv:0},'b',Date.now()-TTL*.75)
     setRemoteAuth(remote.base,aged)
     const me=await api('/api/me');expect(typeof me.token==='string'&&me.token!==aged).toBe(true)
@@ -117,5 +133,5 @@ it('actual mobile API/remote/merge modules: pair, persist, offline conflict, ren
     await forgetRemote();expect((await loadRemote()).mode).toBe('local')
     before=network;await expect(api('/api/me')).rejects.toMatchObject({code:'not-paired',status:0});expect(network===before).toBe(true)
     console.log('PHASE4_PINNED_MOBILE_MODULES PASS')
-  }finally{setRemoteAuth('',null);setAccessHeaders({},'');await runner.cleanup();vi.unstubAllGlobals();vi.unstubAllEnvs();h.files.clear();h.secure.clear()}
+  }finally{setRemoteAuth('',null);setAccessHeaders({},'');_viaNativeForTests.clear();h.native=null;await runner.cleanup();vi.unstubAllGlobals();vi.unstubAllEnvs();h.files.clear();h.secure.clear()}
 },150000)
