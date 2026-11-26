@@ -622,6 +622,121 @@ describe('the file mirror never brings back a copy that is not this account\'s l
   })
 })
 
+describe('stash failure hardening', () => {
+  const refuseStorage = keys => {
+    const storage = localStorage
+    let rejected = 0
+    vi.stubGlobal('localStorage', {
+      getItem: k => storage.getItem(k),
+      setItem(k, v) { if (keys.includes(k)) { rejected++; throw Error('storage full') } storage.setItem(k, v) },
+      removeItem(k) { if (keys.includes(k)) { rejected++; throw Error('storage full') } storage.removeItem(k) },
+      key: i => storage.key(i), get length() { return storage.length }, clear: () => storage.clear(),
+    })
+    return { storage, rejected: () => rejected, restore: () => vi.unstubAllGlobals() }
+  }
+  const key = BASE + '|u1'
+  const addOwed = async () => {
+    pairedPhone()
+    h.server = refusing
+    const store = await freshStore()
+    await store.getState().boot()
+    store.getState().update(s => { s.workouts.push(workout('owed', '2026-09-15')) })
+    await store.getState().pushState()
+    return store
+  }
+  it('refuses switching accounts before changing credentials if both stash writes fail', async () => {
+    const store = await addOwed()
+    const old = readFile('opengym-remote.json')
+    const other = { id: 'u2', name: 'bea' }
+    const srv = serverWith(SERVER_STATE)
+    h.server = (p, m, i) => p === '/api/pair/redeem' ? json(200, { token: 'OTHER', user: other }) : srv.handle(p, m, i)
+    h.refuse.add('opengym-stash.json')
+    const fault = refuseStorage(['gym_stash'])
+    try {
+      await expect(store.getState().connectToServer(BASE, 'ABCD2345', async () => false)).rejects.toThrow('Unable to preserve')
+      expect(fault.rejected()).toBeGreaterThan(0)
+      expect(readFile('opengym-remote.json')).toEqual(old)
+      expect(store.getState().user).toEqual(USER)
+      expect(fault.storage.getItem('gym_owner')).toBe(USER.id)
+      expect(ids(store.getState().S.workouts)).toContain('owed')
+      expect(srv.puts).toHaveLength(0)
+    } finally { fault.restore(); h.refuse.clear() }
+  })
+  it('keeps local adoption held if the declined device copy cannot be stashed', async () => {
+    h.files.clear(); localStorage.clear()
+    const local = { ...clone(DEF), _ts: Date.now(), workouts: [workout('mine', '2026-09-20')] }
+    localStorage.setItem('gym_state_v1', JSON.stringify(local))
+    h.files.set('DATA/opengym-remote.json', JSON.stringify({ mode: 'local' }))
+    h.files.set('DATA/opengym-state.json', JSON.stringify(local))
+    const store = await freshStore()
+    await store.getState().boot()
+    const srv = serverWith(SERVER_STATE)
+    h.refuse.add('opengym-stash.json')
+    const fault = refuseStorage(['gym_stash'])
+    try {
+      await expect(store.getState().connectToServer(BASE, 'ABCD2345', async () => false)).rejects.toThrow()
+      expect(fault.rejected()).toBeGreaterThan(0)
+      expect(ids(store.getState().S.workouts)).toContain('mine')
+      expect(fault.storage.getItem('gym_adopt')).not.toBeNull()
+      expect(store.getState().sync.held).toBe(true)
+      await store.getState().pushState()
+      expect(srv.puts).toHaveLength(0)
+    } finally { fault.restore(); h.refuse.clear() }
+    await store.getState().resumeAdoption(async () => false)
+    expect(ids(store.getState().S.workouts)).toEqual(['w1'])
+  })
+  it.each(['native', 'local'])('suppresses an old stash when %s cleanup is refused', async medium => {
+    const store = await addOwed()
+    expect(await store.getState().disconnectServer({ force: true })).toMatchObject({ stashed: true })
+    const srv = serverWith(SERVER_STATE)
+    let fault
+    if (medium === 'native') h.refuse.add('opengym-stash.json')
+    else fault = refuseStorage(['gym_stash'])
+    try {
+      await store.getState().connectToServer(BASE, 'ABCD2345', async () => false)
+      expect(ids(srv.doc.workouts)).toContain('owed')
+      expect(await store.getState().keptState(BASE, USER.id)).toBeNull()
+      expect(await store.getState().keptChanges()).toEqual([])
+      const marker = medium === 'native' ? JSON.parse(localStorage.getItem('gym_stash')) : readFile('opengym-stash.json')
+      expect(marker[key]).toMatchObject({ cleared: true })
+      const old = medium === 'native' ? readFile('opengym-stash.json') : JSON.parse(localStorage.getItem('gym_stash'))
+      expect(ids(old[key].state.workouts)).toContain('owed')
+    } finally { fault?.restore(); h.refuse.clear() }
+  })
+  it('merges legacy equal-timestamp copies for the same account without dropping either workout', async () => {
+    pairedPhone()
+    const store = await freshStore()
+    h.server = refusing
+    await store.getState().boot()
+    const entry = id => ({ server: BASE, uid: USER.id, name: USER.name, at: 1234, state: { ...clone(DEF), ...clone(SERVER_STATE), workouts: [workout(id, '2026-09-15')] } })
+    localStorage.setItem('gym_stash', JSON.stringify({ [key]: entry('local-only') }))
+    h.files.set('DATA/opengym-stash.json', JSON.stringify({ [key]: entry('native-only') }))
+    expect(ids((await store.getState().keptState(BASE, USER.id)).workouts).sort()).toEqual(['local-only', 'native-only'])
+  })
+  it('retains active-workout stash when both state writes fail during re-pair', async () => {
+    pairedPhone()
+    serverWith(SERVER_STATE)
+    const store = await freshStore()
+    await store.getState().boot()
+    const active = { id: 'running', start: 1234, entries: [], d: '2026-09-15' }
+    store.getState().update(s => { s.active = active })
+    await store.getState().pushState()
+    await store.getState().disconnectServer({ force: true })
+    expect(readFile('opengym-stash.json')[key].state.active).toEqual(active)
+    const srv = serverWith(SERVER_STATE)
+    h.refuse.add('opengym-state.json')
+    h.refuse.add('opengym-state.next.json')
+    const fault = refuseStorage(['gym_state_v1'])
+    try {
+      await store.getState().connectToServer(BASE, 'ABCD2345', async () => false)
+      expect(fault.rejected()).toBeGreaterThan(0)
+      expect((await store.getState().keptState(BASE, USER.id)).active).toEqual(active)
+      expect(store.getState().S.active).toEqual(active)
+      expect(srv.doc.active).toBeUndefined()
+    } finally { fault.restore(); h.refuse.clear() }
+  })
+})
+
 describe('a token the server renews', () => {
   it('is saved to the pairing file at boot and carried by every request after it', async () => {
     pairedPhone()
