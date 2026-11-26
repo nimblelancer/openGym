@@ -24,7 +24,7 @@ export class MediaLifecycle{
     this.a.q('DELETE FROM auth_challenges');
   }
   // Called transactionally with each successful state commit. Re-reference breaks grace.
-  noteState(uid,state){for(const hash of referencedHashes(state))this.touch(uid,hash);}
+  noteState(uid,state){const refs=referencedHashes(state);for(const {hash} of this.a.q('SELECT hash FROM media_gc WHERE uid=?',uid))if(refs.has(hash))this.touch(uid,hash);}
   touch(uid,hash){this.a.q('DELETE FROM media_gc WHERE uid=? AND hash=?',uid,hash);}
   async sweep(uid,live){
     if(!uidOK(uid)||!live())return {status:401,body:{error:'not signed in'}};
@@ -55,6 +55,7 @@ export class MediaLifecycle{
       if(current.kind!=='ok'||referencedHashes(current.state).has(hashOf(o)))throw Error('state changed during sweep');
       const back=await this.bucket.head(o.key);
       if(!back||back.etag!==o.etag)continue;
+      if(!live())return {status:401,body:{error:'not signed in'}};
       await this.bucket.delete(o.key);
       if(await this.bucket.head(o.key))throw Error('media delete not verified');
       this.a.tx(()=>this.touch(uid,hashOf(o)));removed++;freedBytes+=o.size;
