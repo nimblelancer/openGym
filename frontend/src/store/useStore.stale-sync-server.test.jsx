@@ -145,6 +145,12 @@ describe('paired with another server while a read from the first is on its way',
     expect(JSON.parse(localStorage.getItem('gym_sync')).rev).toBeGreaterThanOrEqual(8)
     for (const body of two.puts) expect(ids(body.state.workouts)).not.toContain('one-late')
     expect(ids(two.doc.workouts)).not.toContain('one-late')
+    expect(ids(two.doc.workouts)).toContain('phone-new')
+    // Moving a server with the same account ID keeps an independent fallback
+    // under the previous address; the late response must not enter it either.
+    const fallback = JSON.parse(h.files.get('DATA/opengym-stash.json'))[ONE + '|u1']
+    expect(ids(fallback.state.workouts)).toContain('phone-new')
+    expect(ids(fallback.state.workouts)).not.toContain('one-late')
     expect(useStore.getState().sync.server).toBe(TWO)
   })
 })
