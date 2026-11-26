@@ -113,11 +113,34 @@ it('actual mobile API/remote/merge modules: pair, persist, offline conflict, ren
     const merged=mergeStates(await nativeLoad(),conflict.data.state)
     await put(merged,conflict.data.rev,conflict.data.state._wid)
     expect((await api('/api/data')).state.workouts.map(w=>w.id).sort()).toEqual(['offline-phone','other-device','seed'])
-    expect((await api('/api/config')).allow_guest).toBe(false)
-    expect((await api('/api/config')).coach??null).toBe(null)
-    for(const path of ['/api/oidc/app/redeem','/api/login/password','/api/admin/users']){
+    // Capability checks use the pinned upstream predicates on actual Worker config.
+    const caps=await api('/api/config')
+    expect(caps).toMatchObject({invite_only:true,allow_guest:false,signed_in:true,coach:null})
+    expect(caps.media).toBeFalsy()
+    expect(caps.integrations?.providers||[]).toEqual([])
+    const {coachAvailable}=await import('./coach.js')
+    const {libraryOf}=await import('./shared-api.js')
+    const {sharingOn}=await import('./sharing-api.js')
+    const {trainerRoles}=await import('./trainer-api.js')
+    const {tokensOn}=await import('./api-tokens.js')
+    expect(coachAvailable(caps,user,{mobile:true,coachMode:'server'})).toBe(false)
+    expect(libraryOf(caps)).toBeNull()
+    expect(sharingOn(caps)).toBe(false)
+    expect(trainerRoles(caps)).toEqual({trainer:false,lead:false})
+    expect(tokensOn(caps,user,false)).toBe(false)
+    for(const path of ['/api/oidc/app/redeem','/api/login/password','/api/admin/users','/api/watch/events','/api/integrations','/api/coach/status','/api/shared','/api/trainer','/api/tokens','/api/push/public-key']){
       await expect(api(path)).rejects.toMatchObject({status:404})
     }
+    // App starts the relay even without a capability flag. A 404 must fail closed:
+    // no snapshot or drain is sent after status reports no pairing.
+    const {relayBridge}=await import('./watch-relay.js')
+    const relay=relayBridge({signedIn:()=>true})
+    expect(await relay.status()).toMatchObject({paired:false,installed:false,reachable:false})
+    const beforeRelay=network
+    expect(await relay.sendSnapshot({json:'{}'})).toEqual({sent:false})
+    expect(await relay.drain()).toEqual({events:[]})
+    expect(network).toBe(beforeRelay)
+    expect((await api('/api/data')).state.workouts.length).toBe(3)
     const done=await api('/api/nudge-check?date=2026-09-02')
     expect(idsToCancel({date:'2026-09-02',reminder:[1000],nudge:[2000]},done)).toEqual([1000,2000])
     html=true;await expect(api('/api/data')).rejects.toMatchObject({code:'bad-response',status:200});html=false

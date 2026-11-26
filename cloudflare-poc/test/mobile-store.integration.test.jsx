@@ -155,7 +155,9 @@ it('actual upstream store: offline conflict, failed acknowledgements, revoke, st
   vi.useFakeTimers({toFake:['setTimeout','clearTimeout']})
   let store=await freshStore()
   const connect=async(server)=>store.getState().connectToServer(server.base,await server.pair(),async()=>false)
-  await store.getState().boot();await connect(home)
+  await store.getState().boot()
+  expect(seen).toEqual([])
+  await connect(home)
   expect(ids(store.getState().S)).toEqual(['seed'])
   expect(store.getState().user.id===home.uid).toBe(true)
   mode='offline'
@@ -225,6 +227,8 @@ it('actual upstream store: offline conflict, failed acknowledgements, revoke, st
   expect(ids(readFile('opengym-state.json'))).toContain('mirror-only')
   store.setState({user:null,ready:false});localStorage.clear();mode='online'
   store=await freshStore();await store.getState().boot()
+  expect(store.getState().config).toMatchObject({invite_only:true,allow_guest:false,signed_in:true,coach:null})
+  expect(store.getState().config.media).toBeFalsy()
   expect(ids((await home.get()).state)).toContain('mirror-only')
   expect(ids(store.getState().S)).toContain('mirror-only')
   // Delete one item, reset via real store, then restart the backend.
@@ -237,5 +241,8 @@ it('actual upstream store: offline conflict, failed acknowledgements, revoke, st
   await home.runner.stop();await home.runner.start()
   expect(ids((await home.get()).state)).toEqual([])
   expect((await home.get()).state.resetAt).toBe(reset.resetAt)
+  // No deferred capability endpoint was needed by core boot/adoption/sync/stash/reset.
+  const deferred=/^\/api\/(media|watch|coach|integrations|shared|sharing|trainer|tokens|push)(\/|$)/
+  expect(seen.filter(x=>deferred.test(x.path))).toEqual([])
   console.log('PHASE4_REAL_STORE_STASH_CONFLICT_RESET PASS')
 },240000)
