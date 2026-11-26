@@ -203,10 +203,23 @@ jobs:
           /usr/bin/time -v -o reports/web-media-process-profile.txt node --test --test-concurrency=1 test/web-media.test.mjs || status=$?
           cat reports/web-media-process-profile.txt
           exit "$status"
+      - name: Actual upstream frontend media sync against local R2
+        working-directory: frontend
+        run: |
+          target=src/lib/phase5-cloudflare-media.integration.test.jsx
+          test ! -e "$target"
+          cp ../cloudflare-poc/test/media-client.integration.test.jsx "$target"
+          trap 'rm -f "$target"' EXIT
+          status=0
+          /usr/bin/time -v -o ../cloudflare-poc/reports/media-client-process-profile.txt node node_modules/vitest/vitest.mjs run "$target" --maxWorkers=1 || status=$?
+          cat ../cloudflare-poc/reports/media-client-process-profile.txt
+          exit "$status"
       - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f
         if: always()
         with:
           name: phase5-web-media-process-profile
-          path: cloudflare-poc/reports/web-media-process-profile.txt
+          path: |
+            cloudflare-poc/reports/web-media-process-profile.txt
+            cloudflare-poc/reports/media-client-process-profile.txt
           if-no-files-found: warn
           retention-days: 7
