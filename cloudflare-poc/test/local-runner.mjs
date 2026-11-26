@@ -25,7 +25,7 @@ export async function localRunner(config='wrangler.jsonc',opts={}) {
   };
   async function start() {
     child = spawn(process.execPath, ['node_modules/wrangler/bin/wrangler.js','dev','--config',config,'--local','--ip','127.0.0.1',
-      '--port',String(port),'--persist-to',dir,...Object.entries(opts.vars?.(origin)||{}).flatMap(([k,v])=>['--var',k+':'+v])], { env, detached: process.platform !== 'win32', stdio: ['ignore','pipe','pipe'] });
+      '--port',String(port),'--persist-to',dir,...Object.entries(opts.vars?.(origin)||{}).flatMap(([k,v])=>['--var',k+':'+v])], { env, ...(opts.cwd?{cwd:opts.cwd}:{}), detached: process.platform !== 'win32', stdio: ['ignore','pipe','pipe'] });
     child.stdout.on('data', b => { log = (log + b).slice(-20000); });
     child.stderr.on('data', b => { log = (log + b).slice(-20000); });
     for (let i=0; i<120; i++) {

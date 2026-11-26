@@ -24,3 +24,6 @@ Ctrl+C in terminal stops proxy/Worker and removes disposable local persistence. 
 
 ## Automated harness readiness
 Final CI [45657223798](https://github.com/nimblelancer/openGym/actions/runs/45657223798) on ab4e37829ddb18c74267460e821644c0b5743d18 completed SUCCESS, all five jobs. Direct Chrome virtual and manual UI/proxy virtual smoke both PASS. The readiness gate is met; owner may run M3-01..09 on that tested commit or a documentation-only successor. For an existing test clone, update with git pull --ff-only on the feature branch; verify branch/commit before running. This is not a physical passkey acceptance result. Phase 3 stays open until manual results and explicit owner acceptance.
+
+## Owner scheduling update
+Physical test M3-01..09 is deferred, not waived. The tested isolated harness remains available; re-run on the final integrated candidate if authentication changes. No physical PASS or Phase 3 closure is recorded. Owner may perform these tests later in a consolidated manual acceptance session before integrated release acceptance.

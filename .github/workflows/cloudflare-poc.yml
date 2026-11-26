@@ -95,6 +95,40 @@ jobs:
           path: cloudflare-poc/reports/auth-process-profile.txt
           if-no-files-found: warn
           retention-days: 7
+  mobile-contract:
+    if: github.ref == 'refs/heads/feat/cloudflare-migration'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1
+        with:
+          node-version: '26'
+      - run: npm ci --no-audit --no-fund
+        working-directory: cloudflare-poc
+      - run: npm ci --ignore-scripts --no-audit --no-fund
+        working-directory: frontend
+      - name: Pinned mobile modules against real local Worker
+        working-directory: frontend
+        run: |
+          target=src/lib/phase4-cloudflare.integration.test.jsx
+          test ! -e "$target"
+          cp ../cloudflare-poc/test/mobile-client.integration.test.jsx "$target"
+          trap 'rm -f "$target"' EXIT
+          mkdir -p ../cloudflare-poc/reports
+          status=0
+          /usr/bin/time -v -o ../cloudflare-poc/reports/mobile-process-profile.txt node node_modules/vitest/vitest.mjs run "$target" || status=$?
+          cat ../cloudflare-poc/reports/mobile-process-profile.txt
+          exit "$status"
+      - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f
+        if: always()
+        with:
+          name: phase4-mobile-process-profile
+          path: cloudflare-poc/reports/mobile-process-profile.txt
+          if-no-files-found: warn
+          retention-days: 7
   upstream-api:
     if: github.ref == 'refs/heads/feat/cloudflare-migration'
     runs-on: ubuntu-latest
