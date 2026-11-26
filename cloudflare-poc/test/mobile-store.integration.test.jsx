@@ -149,9 +149,12 @@ afterEach(async()=>{
 })
 it('actual upstream store: offline conflict, failed acknowledgements, revoke, stash, account isolation and re-pair',async()=>{
   localStorage.clear();h.files.clear();h.files.set('DATA/opengym-remote.json',JSON.stringify({mode:'local'}))
+  // Install loopback transport before localRunner.start probes /api/health.
+  // Happy DOM fetch has a browser origin and cannot make this Node harness probe.
+  // Explicit native CORS assertions remain in the separate mobile contract fixture.
+  installTransport()
   const home=await makeServer('Synthetic home')
   await home.save({...clone(DEF),_ts:Date.now(),workouts:[work('seed','2026-09-01')],routines:[]})
-  installTransport()
   vi.useFakeTimers({toFake:['setTimeout','clearTimeout']})
   let store=await freshStore()
   const connect=async(server)=>store.getState().connectToServer(server.base,await server.pair(),async()=>false)
