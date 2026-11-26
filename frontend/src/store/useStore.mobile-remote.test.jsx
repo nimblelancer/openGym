@@ -304,6 +304,68 @@ describe('a phone an earlier version already unpaired', () => {
 })
 
 describe('Disconnect anyway keeps the owed changes for the next pairing', () => {
+  it.each(['localStorage', 'native file'])('recovers the newer stash when only %s accepts the write', async durable => {
+    pairedPhone()
+    h.server = refusing
+    const useStore = await freshStore()
+    await useStore.getState().boot()
+    useStore.getState().update(s => { s.workouts.push(workout('w2', '2026-09-15')) })
+    await useStore.getState().pushState()
+    const key = BASE + '|u1'
+    // Same key count, and a clock that has gone backwards since the previous stash.
+    const old = { [key]: { server: BASE, uid: USER.id, name: USER.name, at: Date.now() + 10000, state: clone(SERVER_STATE) } }
+    localStorage.setItem('gym_stash', JSON.stringify(old))
+    h.files.set('DATA/opengym-stash.json', JSON.stringify(old))
+    const storage = localStorage
+    let rejected = 0
+    if (durable === 'localStorage') h.refuse.add('opengym-stash.json')
+    else vi.stubGlobal('localStorage', {
+      getItem: k => storage.getItem(k),
+      setItem(k, v) { if (k === 'gym_stash') { rejected++; throw Error('storage full') } storage.setItem(k, v) },
+      removeItem: k => storage.removeItem(k),
+      key: i => storage.key(i),
+      get length() { return storage.length },
+      clear: () => storage.clear(),
+    })
+    try {
+      expect(await useStore.getState().disconnectServer({ force: true })).toMatchObject({ stashed: true })
+      expect(useStore.getState().user).toBeNull()
+      const saved = durable === 'localStorage' ? JSON.parse(storage.getItem('gym_stash')) : readFile('opengym-stash.json')
+      const stale = durable === 'localStorage' ? readFile('opengym-stash.json') : JSON.parse(storage.getItem('gym_stash'))
+      expect(saved[key].at).toBeGreaterThan(old[key].at)
+      expect(ids(saved[key].state.workouts)).toContain('w2')
+      expect(stale).toEqual(old)
+      if (durable === 'native file') expect(rejected).toBeGreaterThan(0)
+      expect(ids((await useStore.getState().keptState(BASE, USER.id)).workouts)).toContain('w2')
+    } finally {
+      if (durable === 'native file') vi.unstubAllGlobals()
+      h.refuse.delete('opengym-stash.json')
+    }
+    const srv = serverWith(SERVER_STATE)
+    await useStore.getState().connectToServer(BASE, 'ABCD2345', vi.fn(async () => false))
+    expect(ids(srv.doc.workouts).sort()).toEqual(['w1', 'w2'])
+    expect(ids(useStore.getState().S.workouts).sort()).toEqual(['w1', 'w2'])
+    expect(readFile('opengym-stash.json')).toEqual({})
+    expect(localStorage.getItem('gym_stash')).toBeNull()
+  })
+
+  it('retains the stash after re-pair when the server refuses the merged write', async () => {
+    pairedPhone()
+    h.server = refusing
+    const useStore = await freshStore()
+    await useStore.getState().boot()
+    useStore.getState().update(s => { s.workouts.push(workout('w2', '2026-09-15')) })
+    await useStore.getState().pushState()
+    expect(await useStore.getState().disconnectServer({ force: true })).toMatchObject({ stashed: true })
+    const srv = serverWith(SERVER_STATE)
+    h.server = (path, method, init) => path === '/api/data' && method === 'PUT' ? json(503, { error: 'unavailable' }) : srv.handle(path, method, init)
+    await useStore.getState().connectToServer(BASE, 'ABCD2345', vi.fn(async () => false))
+    expect(ids(srv.doc.workouts)).toEqual(['w1'])
+    expect(ids(useStore.getState().S.workouts)).toContain('w2')
+    expect(useStore.getState().unsyncedChanges().owed).toBe(true)
+    expect(ids((await useStore.getState().keptState(BASE, USER.id)).workouts)).toContain('w2')
+  })
+
   it('stashes them in storage and in a file, wipes the phone, and merges them back when paired to the same server and account', async () => {
     pairedPhone()
     h.server = refusing
