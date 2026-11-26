@@ -1160,7 +1160,22 @@ export const useStore = create((set, get) => {
         // Either medium may have refused the last write. Do not let an older native
         // entry hide the newer localStorage copy (or the reverse).
         for (const [key, entry] of Object.entries(f)) {
-          if (!all[key] || (Number(entry?.at) || 0) >= (Number(all[key]?.at) || 0)) all[key] = entry
+          const prev = all[key]
+          const at = Number(entry?.at) || 0, before = Number(prev?.at) || 0
+          if (!prev || at > before || (at === before && entry?.cleared)) all[key] = entry
+          else if (at === before && !prev.cleared && entry?.state && prev.state && !sameStash(prev, entry)) {
+            // Legacy equal timestamps: keep both sets of edits, not an arbitrary medium.
+            const state = mergeStates(prev.state, entry.state)
+            state.active = carryActive(prev.state, state) || carryActive(entry.state, state) || null
+            all[key] = { ...prev, state, ...(prev.adopt || entry.adopt ? { adopt: true } : {}) }
+            // Two distinct running sessions cannot be represented in one active slot.
+            // Preserve the second as a manual-export-only entry, never auto-adopt it.
+            if (prev.state.active && entry.state.active && !sameStash(prev.state.active, entry.state.active)) {
+              const uid = 'device-legacy-' + key
+              const backup = stashKey(prev.server, uid)
+              if (!all[backup]) all[backup] = { ...entry, uid, name: entry.name, state: entry.state }
+            }
+          }
         }
       }
     }
@@ -1171,9 +1186,9 @@ export const useStore = create((set, get) => {
   const stashAt = previous => Math.max(Date.now(), (Number(previous?.at) || 0) + 1)
   const sameStash = (a, b) => JSON.stringify(a) === JSON.stringify(b)
   // True when at least one durable copy of the stashes was written.
-  const writeStashes = async all => {
+  const writeStashes = async (all, { both = false } = {}) => {
     const empty = !Object.keys(all).length
-    let ok = false
+    let ok = false, nativeOK = false
     try {
       if (empty) {
         localStorage.removeItem(STASH_KEY)
@@ -1189,10 +1204,23 @@ export const useStore = create((set, get) => {
       const back = await readJsonFile(STASH_FILE)
       // A failed write can leave an old file with exactly the same keys. Only
       // the intended contents, not the number of accounts, prove a durable copy.
-      ok = ok || (!!back && sameStash(back, all))
+      nativeOK = !!back && sameStash(back, all)
     }
     set({ keptRev: get().keptRev + 1 })
-    return ok || empty
+    return both && MOBILE ? ok && nativeOK : ok || nativeOK
+  }
+  // Publish the deletion before removing its marker. If one medium is unavailable,
+  // the newer marker suppresses the old entry on that medium on the next read.
+  const clearStashes = async (all, keys) => {
+    if (!keys.length) return true
+    if (!MOBILE) {
+      for (const key of keys) delete all[key]
+      return writeStashes(all)
+    }
+    for (const key of keys) all[key] = { at: stashAt(all[key]), cleared: true }
+    if (!await writeStashes(all, { both: true })) return false
+    const compact = Object.fromEntries(Object.entries(all).filter(([, entry]) => !entry?.cleared))
+    return writeStashes(compact)
   }
   // A different account signing in on a copy whose session ended without a sign-out (it expired,
   // was revoked, the server no longer knows the account) — or on a live one that still owes it or
@@ -1238,6 +1266,25 @@ export const useStore = create((set, get) => {
     }
     set({ keptRev: get().keptRev + 1 })
     if (MOBILE) keeping = readStashes().then(f => writeStashes({ ...f, [key]: entry })).catch(() => {})
+  }
+  // Prepare before remote.js installs new credentials. A refused stash leaves
+  // the current account, pairing and state untouched.
+  const prepareMobileSwitch = async (user, base) => {
+    const owner = readOwner()
+    if (!owner || (owner === user.id && serverBase() === base)) return
+    syncFromSaved()
+    const S = get().S, tok = currentSession(), server = serverBase()
+    const all = await readStashes()
+    const key = stashKey(server, owner)
+    if (hasData(S) || S.active || pendingRefCount(S)) {
+      const prev = all[key]?.state
+      const state = prev ? mergeStates(S, prev) : clone(S)
+      state.active = carryActive(S, state) || carryActive(prev, state) || null
+      all[key] = { server: server || null, uid: owner, name: get().user?.name || localStorage.getItem('gym_owner_name') || '', at: stashAt(all[key]), state, ...(adoptHold || all[key]?.adopt ? { adopt: true } : {}) }
+      if (!await writeStashes(all)) throw new Error('Unable to preserve this account on the device')
+    }
+    if (!isCurrent(tok) || readOwner() !== owner || !sameStash(get().S, S)) throw new Error('Account or data changed during pairing; retry')
+    get().setUser(user, { adopt: true, preparedSwitch: true })
   }
   // What a sign-out or disconnect answers when something is owed: how many changes, and how many
   // photos or videos, when there are any.
@@ -1296,7 +1343,7 @@ export const useStore = create((set, get) => {
     const all = await readStashes()
     if (!isCurrent(tok)) return
     const exact = stashKey(serverBase(), user.id)
-    const keys = Object.keys(all).filter(k => k === exact || (all[k]?.uid === user.id && !all[k]?.server))
+    const keys = Object.keys(all).filter(k => !all[k]?.cleared && (k === exact || (all[k]?.uid === user.id && !all[k]?.server)))
     if (!keys.length) return
     const S = get().S
     let merged = S
@@ -1317,28 +1364,28 @@ export const useStore = create((set, get) => {
     if (MOBILE && merged.active) {
       const saved = readSaved()
       const mirror = await nativeLoad()
+      const mirrorOwner = await readJsonFile(MIRROR_OWNER_FILE)
       if (!isCurrent(tok)) return
       if (!(savedIsMine() && sameStash(saved?.active, merged.active)) &&
-          !sameStash(mirror?.active, merged.active)) return
+          !(mirrorOwner?.owner === user.id && mirrorOwner.ts === mirror?._ts && sameStash(mirror?.active, merged.active))) return
     }
     // Read once more, so a stash written meanwhile is not written over with the older read.
     const now = await readStashes()
     if (!isCurrent(tok)) return
-    for (const k of keys) if (sameStash(now[k], all[k])) delete now[k]
-    await writeStashes(now)
+    await clearStashes(now, keys.filter(k => sameStash(now[k], all[k])))
   }
 
   // "Keep profile as is": what this device held before the sign-in leaves the screen, but not the
   // device. It is kept aside like a kept change (its own key, never added back on its own) and can
   // be saved as a backup file from Settings, in case the answer was the wrong one.
   const keepAside = async (S, name, keepUid) => {
-    if (!hasData(S)) return
+    if (!hasData(S) && !S.active) return
     const state = clone(S)
     const all = await readStashes()
     const uid = keepUid || 'device-' + Date.now().toString(36)
-    all[stashKey(serverBase(), uid)] = { server: serverBase() || null, uid, name, at: Date.now(), state }
-    await writeStashes(all)
-    set({ keptRev: get().keptRev + 1 })
+    const key = stashKey(serverBase(), uid)
+    all[key] = { server: serverBase() || null, uid, name, at: stashAt(all[key]), state }
+    if (!await writeStashes(all)) throw new Error(t('This device is out of storage: the change is not saved on it. Signed in, it still goes to the server.'))
   }
   const keepDeviceCopy = () => keepAside(get().S, t('This device, before signing in'))
 
@@ -1393,14 +1440,15 @@ export const useStore = create((set, get) => {
     if (!state) {
       const push = hasData(S0) && (!alwaysAsk || sameAccount || await askAbout(localExtras(S0, null)))
       if (gone()) return STALE
-      releaseAdopt()
       if (hasData(get().S) && !push) {
         if (asked) await keepDeviceCopy()
         if (gone()) return STALE
+        releaseAdopt()
         takeServer()
         await applyStash()
         return { adopted: true, added: false }
       }
+      releaseAdopt()
       markOwed(false)
       if (push) { if (rev != null) writeSync(rev, 0); forceNext = true; await get().pushState() }
       else { if (rev != null) writeSync(rev, 0); confirmed(get().S) }
@@ -1439,8 +1487,8 @@ export const useStore = create((set, get) => {
     if (gone()) return STALE
     await reread()
     if (gone()) return STALE
-    releaseAdopt()
     if (keep) {
+      releaseAdopt()
       const S = get().S
       const merged = Object.assign(clone(DEF), mergeStates(state, S, { prefer: 'a' }))
       merged.active = carryActive(S, merged)
@@ -1460,6 +1508,7 @@ export const useStore = create((set, get) => {
     const later = pre ? splitByPre(get().S, pre).later : null
     if (asked) await keepDeviceCopy()
     if (gone()) return STALE
+    releaseAdopt()
     takeServer()
     if (later) {
       const S = get().S
@@ -1814,7 +1863,7 @@ export const useStore = create((set, get) => {
 
     // `adopt` (a sign-in, a pairing — { alwaysAsk } for a device link): adoptProfile follows and
     // decides what becomes of this copy; until it has, nothing is pulled or pushed (ADOPT_KEY).
-    setUser(u, { adopt } = {}) {
+    setUser(u, { adopt, preparedSwitch = false } = {}) {
       const was = get().user?.id ?? null
       const wasHeld = adoptHold   // the hold of the account signed in so far, before this one's goes on
       if (u) {
@@ -1826,8 +1875,9 @@ export const useStore = create((set, get) => {
         // data still moves into a freshly created profile. The same account coming back — a
         // phone paired again, a browser signed in again — is remembered for adoptProfile.
         const owner = localStorage.getItem('gym_owner')
-        rejoined = owner === u.id
-        const other = !!owner && owner !== u.id
+        rejoined = owner === u.id && !preparedSwitch
+        const other = !!owner && (owner !== u.id || preparedSwitch)
+        if (other && MOBILE && !preparedSwitch) throw new Error('Preserve the previous account before switching')
         // The hold goes on before anything else can run: a poll, a resume, a debounced push.
         if (adopt) {
           adoptHold = true
@@ -1845,7 +1895,7 @@ export const useStore = create((set, get) => {
         // account's saves (seenOwner below).
         syncFromSaved()
         if (other) {
-          keepForPrevious(owner, wasHeld)
+          if (!preparedSwitch) keepForPrevious(owner, wasHeld)
           forgetSync()
           localStorage.removeItem(KEY)
           // The new owner before the new copy, as on a sign-out: another tab still holding the
@@ -1880,7 +1930,7 @@ export const useStore = create((set, get) => {
         // Coach entry point would stay hidden until the next reload. Ask again, unawaited:
         // nothing on this path waits for the answer. A copy that has the key was made for a
         // session and is already the right answer, Coach or no Coach.
-        if (get().config && !('coach' in get().config)) get().refreshConfig()
+        if (!preparedSwitch && get().config && !('coach' in get().config)) get().refreshConfig()
       } else { rejoined = false; adoptHold = false; localStorage.removeItem('gym_user') }
       set({ user: u })
       // Another account, or none: what is in flight was for the previous one (GHSA-656w-p99j-x8hf).
@@ -2008,7 +2058,7 @@ export const useStore = create((set, get) => {
     keptRev: 0,
     async keptChanges() {
       const all = await readStashes()
-      return Object.values(all).map(({ server, uid, name, at }) => ({ server: server || null, uid, name, at }))
+      return Object.values(all).filter(e => !e?.cleared).map(({ server, uid, name, at }) => ({ server: server || null, uid, name, at }))
     },
     // The copy kept for one account (keptChanges' server and uid), to save as a backup file.
     async keptState(server, uid) {
@@ -2106,19 +2156,29 @@ export const useStore = create((set, get) => {
     // switches this device over to that account, same as signing in on the web does — the same
     // account pairing again merges what the phone kept (adoptProfile).
     async connectToServer(url, code, ask) {
-      const user = await connect(url, code)   // throws on a bad URL/expired code — caller shows it
-      await get().afterConnect(user, url, ask)
+      let prepared = false
+      const user = await connect(url, code, async (u, base) => {
+        const owner = readOwner()
+        prepared = !!owner && (owner !== u.id || serverBase() !== base)
+        if (prepared) await prepareMobileSwitch(u, base)
+      })
+      await get().afterConnect(user, url, ask, prepared)
     },
     // Signed in with the server's identity provider from the phone (lib/oidc-app.js): from there on
     // exactly what a pairing does.
     async connectWithProvider(url, label, ask) {
-      const user = await connectWithProvider(url, label)
-      await get().afterConnect(user, url, ask)
+      let prepared = false
+      const user = await connectWithProvider(url, label, undefined, async (u, base) => {
+        const owner = readOwner()
+        prepared = !!owner && (owner !== u.id || serverBase() !== base)
+        if (prepared) await prepareMobileSwitch(u, base)
+      })
+      await get().afterConnect(user, url, ask, prepared)
     },
-    async afterConnect(user, url, ask) {
+    async afterConnect(user, url, ask, prepared = false) {
       // The account first, the address after: a copy another account still owed is kept aside
       // for it under the server it belongs to, not the one being paired.
-      get().setUser(user, { adopt: true })
+      if (!prepared) get().setUser(user, { adopt: true })
       if (keeping) { await keeping; keeping = null }
       setPairedBase(normalizeServerUrl(url))
       setSync({ server: pairedBase })
@@ -2174,7 +2234,7 @@ export const useStore = create((set, get) => {
       await stopTimers()
       const all = await readStashes()
       const key = stashKey(serverBase(), uid)
-      if (all[key]) { delete all[key]; await writeStashes(all) }
+      if (all[key]) await clearStashes(all, [key])
       await clearLocalSession()
       if (MOBILE) {
         await forgetRemote()
