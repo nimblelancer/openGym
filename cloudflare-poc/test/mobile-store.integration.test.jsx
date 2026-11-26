@@ -5,11 +5,14 @@
 // Copied to frontend/src/store in CI; no tracked upstream files modified.
 import { afterEach, expect, it, vi } from 'vitest'
 import { request } from 'node:http'
-import { resolve } from 'node:path'
+import { resolve, join } from 'node:path'
+import { readdir } from 'node:fs/promises'
+import { DatabaseSync } from 'node:sqlite'
+import { encode, metaHash } from '../../../cloudflare-poc/src/storage/codec.js'
 import { randomBytes } from 'node:crypto'
 import { localRunner } from '../../../cloudflare-poc/test/local-runner.mjs'
 import { authenticator } from '../../../cloudflare-poc/test/auth-fixture.mjs'
-import { mergeStates, stampChange } from '../lib/sync-merge.js'
+import { stampChange } from '../lib/sync-merge.js'
 const h = vi.hoisted(() => {
   vi.stubEnv('VITE_MOBILE', '1')   // lib/mobile.js: MOBILE = import.meta.env.VITE_MOBILE === '1'
   // `refuse`: file names whose writes fail, like a full disk.
@@ -43,7 +46,6 @@ vi.mock('./useUI.js', () => ({ useUI: { getState: () => ({ toast: () => {} }) } 
 vi.mock('../lib/coach-secrets.js',()=>({secureGet:async()=>null,secureSet:async()=>{},secureRemove:async()=>{}}))
 vi.mock('../lib/oidc-app.js',()=>({phoneSignIn:async()=>{throw Error('OIDC deferred')}}))
 vi.mock('../lib/capacitor-fetch.js',()=>({inAndroidApp:async()=>false,nativeFetch:async()=>{throw Error('not used in store fixture')}}))
-vi.mock('../sheets.jsx',()=>({askAddDeviceData:async()=>false}))
 function httpFetch(url,init={}){
   return new Promise((ok,fail)=>{
     const u=new URL(String(url));if(u.protocol!=='http:'||!['127.0.0.1','localhost'].includes(u.hostname)){fail(Error('nonlocal request refused'));return}
@@ -91,6 +93,34 @@ async function makeServer(name){
   const {body:o}=await raw('/api/register/options','POST',{name,code:SETUP_CODE})
   const reg=await raw('/api/register/verify','POST',{cid:o.cid,credential:dev.register(o.options.challenge)});cookie=reg.cookie
   return {runner,base:runner.base,uid:reg.body.user.id,get,save,pair,login,revoke:()=>raw('/api/logout/all','POST',{})}
+}
+// Offline rewind of a disposable DB only; no restore route in the Worker.
+async function findAuthDb(root){
+  for(const e of await readdir(root,{withFileTypes:true})){
+    const p=join(root,e.name)
+    if(e.isDirectory()){const hit=await findAuthDb(p);if(hit)return hit}
+    else if(e.name.endsWith('.sqlite')){
+      const db=new DatabaseSync(p,{timeout:5000})
+      try{if(db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='profile_state'").get())return p}finally{db.close()}
+    }
+  }
+}
+async function rewind(server,state){
+  await server.runner.stop()
+  const path=await findAuthDb(server.runner.dir);if(!path)throw Error('disposable profile DB not found')
+  const db=new DatabaseSync(path,{timeout:5000})
+  try{
+    const e=encode(state),m={profile_id:server.uid,rev:state._rev,wid:state._wid,byte_count:e.byteCount,chunk_count:e.chunks.length,digest:e.digest,updated_at:Date.now()}
+    m.integrity=metaHash(m)
+    db.exec('BEGIN IMMEDIATE')
+    try{
+      db.prepare('DELETE FROM profile_chunks WHERE profile_id=?').run(server.uid)
+      e.chunks.forEach((b,i)=>db.prepare('INSERT INTO profile_chunks VALUES(?,?,?)').run(server.uid,i,b))
+      db.prepare('INSERT OR REPLACE INTO profile_state VALUES(?,?,?,?,?,?,?,?)').run(m.profile_id,m.rev,m.wid,m.byte_count,m.chunk_count,m.digest,m.updated_at,m.integrity)
+      db.exec('COMMIT')
+    }catch(e){db.exec('ROLLBACK');throw e}
+  }finally{db.close()}
+  await server.runner.start()
 }
 let mode='online',seen=[]
 function installTransport(){
@@ -142,6 +172,11 @@ it('actual upstream store: offline conflict, failed acknowledgements, revoke, st
   expect(seen.some(x=>x.path==='/api/data'&&x.method==='PUT'&&x.status===409)).toBe(true)
   expect(ids((await home.get()).state)).toEqual(['phone-offline','seed','web-edit'])
   expect(store.getState().unsyncedChanges().owed).toBe(false)
+  // A valid but older snapshot is restored offline, retaining the account and credentials.
+  await rewind(home,common.state)
+  expect((await home.get()).rev).toBe(common.rev)
+  await store.getState().pullState()
+  expect(ids((await home.get()).state)).toEqual(['phone-offline','seed','web-edit'])
   // These transport failures are injected on the client side; the Worker remains untouched.
   store.getState().update(s=>{s.workouts.push(work('owed','2026-09-04'))})
   for(const fault of ['503','html']){
@@ -154,6 +189,16 @@ it('actual upstream store: offline conflict, failed acknowledgements, revoke, st
   expect(store.getState().sync.status).toBe('auth')
   expect((await store.getState().disconnectServer()).owed).toBe(true)
   expect(ids(store.getState().S)).toContain('owed')
+  // If both stash targets fail, forced disconnect must refuse, not erase the only copy.
+  h.refuse.add('opengym-stash.json')
+  const proto=Object.getPrototypeOf(localStorage),set=proto.setItem
+  const deny=vi.spyOn(proto,'setItem').mockImplementation(function(k,v){if(k==='gym_stash')throw Error('fixture storage full');return set.call(this,k,v)})
+  try{
+    const noStash=await store.getState().disconnectServer({force:true})
+    expect(noStash.stashed).toBe(false)
+    expect(ids(store.getState().S)).toContain('owed')
+    expect(readFile('opengym-remote.json').mode).toBe('remote')
+  }finally{deny.mockRestore();h.refuse.delete('opengym-stash.json')}
   const kept=await store.getState().disconnectServer({force:true})
   expect(kept.stashed).toBe(true)
   expect(readFile('opengym-remote.json').mode).toBe('local')
@@ -174,6 +219,14 @@ it('actual upstream store: offline conflict, failed acknowledgements, revoke, st
   expect(ids((await home.get()).state)).toEqual(['owed','phone-offline','seed','web-edit'])
   expect(ids(store.getState().S)).toEqual(['owed','phone-offline','seed','web-edit'])
   expect(readFile('opengym-stash.json')?.[stashKey]||null).toBe(null)
+  // A fresh store with no localStorage recovers an unsent edit from the native file mirror.
+  mode='offline';store.getState().update(s=>{s.workouts.push(work('mirror-only','2026-09-06'))})
+  await store.getState().pushState();await vi.advanceTimersByTimeAsync(900)
+  expect(ids(readFile('opengym-state.json'))).toContain('mirror-only')
+  store.setState({user:null,ready:false});localStorage.clear();mode='online'
+  store=await freshStore();await store.getState().boot()
+  expect(ids((await home.get()).state)).toContain('mirror-only')
+  expect(ids(store.getState().S)).toContain('mirror-only')
   // Delete one item, reset via real store, then restart the backend.
   store.getState().update(s=>{s.workouts=s.workouts.filter(w=>w.id!=='seed')})
   await store.getState().pushState()

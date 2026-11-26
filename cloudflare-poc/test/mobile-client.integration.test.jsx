@@ -30,6 +30,7 @@ import { connect,loadRemote,renewToken,forgetRemote } from './remote.js'
 import { nativeLoad,nativeSave } from './mobile.js'
 import { mergeStates,stampChange } from './sync-merge.js'
 import { idsToCancel } from './nudge-check.js'
+import { saveCfAccess,loadCfAccess,clearCfAccess } from './cf-access.js'
 import { _viaNativeForTests } from './api.js'
 const secret=()=>randomBytes(32).toString('hex')
 const clone=x=>JSON.parse(JSON.stringify(x))
@@ -55,10 +56,10 @@ function httpFetch(url,init={}){
 it('actual mobile API/remote/merge modules: pair, persist, offline conflict, renewal and re-pair against Worker',async()=>{
   const AUTH_SECRET=secret(),SETUP_CODE=secret()
   const runner=await localRunner('wrangler.api.jsonc',{cwd:resolve('../cloudflare-poc'),health:'/api/health',privateLogs:true,vars:origin=>({AUTH_SECRET,SETUP_CODE,API_ORIGIN:origin,RP_ID:'localhost'})})
-  let offline=false,html=false,forceNative=false,network=0,counter=0
+  let offline=false,html=false,forceNative=false,network=0,counter=0,observed=[]
   const dev=authenticator({rp:'localhost',origin:runner.origin})
   const cfg=config({AUTH_SECRET,SETUP_CODE,API_ORIGIN:runner.origin,RP_ID:'localhost'})
-  vi.stubGlobal('fetch',(url,init={})=>{network++;if(offline||forceNative)return Promise.reject(Error('synthetic offline'));if(html)return Promise.resolve({ok:true,status:200,json:async()=>{throw Error('HTML')},text:async()=>'<html>not API</html>'});return httpFetch(url,init)})
+  vi.stubGlobal('fetch',(url,init={})=>{network++;const headers=new Headers(init.headers||{});observed.push({origin:new URL(String(url)).origin,access:headers.has('CF-Access-Client-Id')&&headers.has('CF-Access-Client-Secret'),bearer:headers.has('Authorization'),cookie:headers.has('Cookie')});if(offline||forceNative)return Promise.reject(Error('synthetic offline'));if(html)return Promise.resolve({ok:true,status:200,json:async()=>{throw Error('HTML')},text:async()=>'<html>not API</html>'});return httpFetch(url,init)})
   const owner=async(path,body,cookie)=>{
     const r=await httpFetch(runner.base+path,{method:body===undefined?'GET':'POST',headers:{origin:runner.origin,...(body===undefined?{}:{'content-type':'application/json'}),...(cookie?{cookie}:{})},...(body===undefined?{}:{body:JSON.stringify(body)})})
     if(!r.ok)throw Error('owner fixture '+path+' '+r.status)
@@ -85,6 +86,16 @@ it('actual mobile API/remote/merge modules: pair, persist, offline conflict, ren
     expect(user.id===reg.data.user.id).toBe(true);expect(remote.mode).toBe('remote');expect(remote.token===remoteAuth().headers.Authorization.slice(7)).toBe(true)
     await expect(connect(runner.base,code)).rejects.toMatchObject({code:'pair-invalid',status:400})
     expect((await loadRemote()).token===remote.token).toBe(true)
+    // Fake Access values remain scoped to exactly the configured origin; no hosted Access.
+    await saveCfAccess({clientId:'fixture-client',clientSecret:'fixture-only',server:runner.base})
+    await loadCfAccess({pairedBase:runner.base});await api('/api/me')
+    expect(observed.at(-1)).toMatchObject({origin:runner.base,access:true,bearer:true,cookie:false})
+    // Different authority (localhost instead of 127.0.0.1) must not receive the Access headers.
+    setRemoteAuth(runner.origin,remote.token)
+    // Adapter permits loopback authority only; Node may choose IPv6 for localhost.
+    await api('/api/me').catch(()=>{})
+    expect(observed.at(-1)).toMatchObject({origin:runner.origin,access:false,bearer:true,cookie:false})
+    setRemoteAuth(runner.base,remote.token);await clearCfAccess()
     const first={unit:'kg',workouts:[work('seed','2026-09-01')],routines:[],_ts:Date.now()}
     await put(first,0)
     const common=await api('/api/data'),local=clone(common.state)
@@ -103,6 +114,11 @@ it('actual mobile API/remote/merge modules: pair, persist, offline conflict, ren
     const merged=mergeStates(await nativeLoad(),conflict.data.state)
     await put(merged,conflict.data.rev,conflict.data.state._wid)
     expect((await api('/api/data')).state.workouts.map(w=>w.id).sort()).toEqual(['offline-phone','other-device','seed'])
+    expect((await api('/api/config')).allow_guest).toBe(false)
+    expect((await api('/api/config')).coach??null).toBe(null)
+    for(const path of ['/api/oidc/app/redeem','/api/login/password','/api/admin/users']){
+      await expect(api(path)).rejects.toMatchObject({status:404})
+    }
     const done=await api('/api/nudge-check?date=2026-09-02')
     expect(idsToCancel({date:'2026-09-02',reminder:[1000],nudge:[2000]},done)).toEqual([1000,2000])
     html=true;await expect(api('/api/data')).rejects.toMatchObject({code:'bad-response',status:200});html=false
