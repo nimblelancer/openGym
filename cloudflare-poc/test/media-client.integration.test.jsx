@@ -96,6 +96,43 @@ it('actual media-sync uploads, retries, deduplicates, downloads and refuses stal
     expect(await make(second).fetchToStore(h2,ref2,{force:true})).toBe(true)
     expect(sha(new Uint8Array(await (await second.get(h2)).blob.arrayBuffer()))).toBe(h2)
     console.log('PHASE5_LOST_UPLOAD_ACK_RECONCILIATION PASS')
+    // The real web Zustand store must keep edits owed on media-busy 503, not merge
+    // an absent conflict document. Do not alter the frozen Phase 4 source.
+    const {useStore}=await import('../store/useStore.js')
+    await useStore.getState().boot()
+    expect(useStore.getState().user?.id).toBe(uid)
+    const initial=await api('/api/data')
+    const held=request(runner.base+'/api/media/'+hash,{method:'PUT',headers:{cookie,origin:runner.origin,'content-type':'image/png','content-length':bytes.length,'x-opengym-account':uid}},r=>r.resume())
+    held.on('error',()=>{});held.setTimeout(12000,()=>held.destroy());held.write(Buffer.from(bytes.subarray(0,8)))
+    try{
+      let busy=false
+      for(let i=0;i<40;i++){
+        const r=await transport(runner.base+'/api/media/missing',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({hashes:[hash]})})
+        if(r.status===429){expect((await r.json()).code).toBe('busy');busy=true;break}
+        expect(r.status).toBe(200);await new Promise(r=>setTimeout(r,50))
+      }
+      expect(busy).toBe(true)
+      useStore.getState().update(s=>{s.workouts.push({id:'busy-edit',d:'2026-09-20',start:1000,end:2000,entries:[]})})
+      const beforePush=calls.length
+      await useStore.getState().pushState()
+      expect(calls.slice(beforePush).filter(c=>c.path==='/api/data'&&c.method==='PUT').map(c=>c.status)).toEqual([503])
+      expect(useStore.getState().unsyncedChanges().owed).toBe(true)
+      expect(useStore.getState().S.workouts.map(w=>w.id)).toContain('busy-edit')
+      expect((await api('/api/data')).rev).toBe(initial.rev)
+    }finally{held.destroy()}
+    let released=false
+    for(let i=0;i<100;i++){
+      const r=await transport(runner.base+'/api/media/missing',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({hashes:[hash]})})
+      if(r.status===200){released=true;break}
+      expect(r.status).toBe(429);await new Promise(r=>setTimeout(r,100))
+    }
+    expect(released).toBe(true)
+    await useStore.getState().pushState()
+    expect(useStore.getState().unsyncedChanges().owed).toBe(false)
+    expect((await api('/api/data')).state.workouts.map(w=>w.id)).toContain('busy-edit')
+    expect((await api('/api/data')).state.customEx.map(e=>e.id)).toContain('lost-ack')
+    useStore.setState({user:null,ready:false})
+    console.log('PHASE5_ACTUAL_STATE_STORE_BUSY_RETRY PASS')
     const proof=(await post('/api/login/options',{})).data
     const pair=(await post('/api/pair/create',{cid:proof.cid,credential:dev.login(proof.options.challenge,++count)})).data
     const paired=(await post('/api/pair/redeem',{code:pair.code})).data
