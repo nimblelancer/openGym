@@ -825,7 +825,8 @@ export const useStore = create((set, get) => {
   // conditional on exactly the document that was merged. The merged copy is stamped — it is a
   // real change this device now holds — while `ts` in the base stays old, so a pull that
   // happens before the push lands still sees it as unsent.
-  const mergeInto = (local, remote, rev) => {
+  const mergeInto = async (local, remote, rev) => {
+    const tok = currentSession()
     const ts = metaOf().base?.ts || 0
     // The first merge of an older app's owed copy: what that app changed besides its lists is
     // stamped so the merge keeps it (lib/sync-legacy.js). When that cannot be told, the copy as
@@ -833,7 +834,10 @@ export const useStore = create((set, get) => {
     const legacy = readLegacy()
     if (legacy && legacy.owner === get().user?.id) {
       const lifted = liftLegacy(local, remote, legacy.fp, Math.max(Date.now(), highestStamp(local) + 1, highestStamp(remote) + 1))
-      if (!lifted.resolved) keepAside(local, t('This device, before the update'))
+      if (!lifted.resolved) {
+        await keepAside(local, t('This device, before the update'))
+        if (!isCurrent(tok)) return false
+      }
       local = Object.assign(clone(DEF), lifted.state)
     }
     if (legacy) clearLegacy()
@@ -846,6 +850,7 @@ export const useStore = create((set, get) => {
     persist(merged, false)
     if (rev == null) dropSync()
     else writeSync(rev, ts, remote?._wid)
+    return true
   }
   // The workout running on this device, carried from its copy into the one replacing it — in that
   // copy's unit: a merge or a pull can bring the other device's switch to lb along, and a session
@@ -908,8 +913,13 @@ export const useStore = create((set, get) => {
             .then(({ useUI }) => useUI.getState().toast(t('Another device synced while you were importing, so its changes were kept next to the backup.')))
             .catch(() => {})
         }
-        mergeInto(get().S, e.data.state, e.data.rev || 0)
-        return doPush(tok, attempt + 1)
+        try {
+          if (!await mergeInto(get().S, e.data.state, e.data.rev || 0) || !isCurrent(tok)) return
+          return doPush(tok, attempt + 1)
+        } catch (backupError) {
+          if (isCurrent(tok)) { markOwed(true); failed(backupError, { pending: true }) }
+          return
+        }
       }
       // Whatever went wrong — no network, a refused token, a phone without a pairing, a server
       // error — the copy stays owed to the server and the next check retries it.
@@ -1271,12 +1281,13 @@ export const useStore = create((set, get) => {
   // the current account, pairing and state untouched.
   const prepareMobileSwitch = async (user, base) => {
     const owner = readOwner()
-    if (!owner || (owner === user.id && serverBase() === base)) return
+    if (!owner || (owner === user.id && (!serverBase() || serverBase() === base))) return
     syncFromSaved()
     const S = get().S, tok = currentSession(), server = serverBase()
     const all = await readStashes()
     const key = stashKey(server, owner)
-    if (hasData(S) || S.active || pendingRefCount(S)) {
+    const live = get().user?.id === owner
+    if ((!live && hasData(S)) || (hasData(S) && (owesOwn() || adoptHold)) || S.active || pendingRefCount(S)) {
       const prev = all[key]?.state
       const state = prev ? mergeStates(S, prev) : clone(S)
       state.active = carryActive(S, state) || carryActive(prev, state) || null
@@ -1464,15 +1475,16 @@ export const useStore = create((set, get) => {
       // the later edit of each routine, the newer copy's settings) and pushed against the
       // server's revision. Only a copy with nothing of its own since its base takes the
       // server's as it is, so an entry deleted elsewhere meanwhile stays deleted.
-      releaseAdopt()
       const S = get().S
       const { base, owed } = metaOf()
       if (!hasData(S) || (!owed && base && !localChanged(S))) {
+        releaseAdopt()
         takeServer()
         await applyStash()
         return { adopted: true, added: false, merged: false }
       }
-      mergeInto(S, state, rev)
+      if (!await mergeInto(S, state, rev) || gone()) return STALE
+      releaseAdopt()
       await get().pushState()
       if (gone()) return STALE
       await applyStash()
@@ -1993,7 +2005,7 @@ export const useStore = create((set, get) => {
           // revisions. The newer copy wins as before, except that a copy still owed to the
           // server (dirty) is merged instead of pushed over whatever is there.
           if (!base) {
-            if (dirty && state) { mergeInto(S, state, rev); pushPending = false; await get().pushState(); return }
+            if (dirty && state) { if (!await mergeInto(S, state, rev) || !isCurrent(tok)) return; pushPending = false; await get().pushState(); return }
             const restored = restoredStateFor(S, state, false)
             if (restored) { adopt(restored, rev); confirmed(get().S) }
             else if (hasData(S)) { writeSync(rev, 0, state?._wid); await get().pushState() }
@@ -2012,9 +2024,9 @@ export const useStore = create((set, get) => {
           const changed = dirty || localChanged(S)
           if (!serverMoved) { if (changed) await get().pushState(); else confirmed(S); return }
           if (!state) { writeSync(rev, 0); if (hasData(S)) await get().pushState(); return }
-          if (!descends) { mergeInto(S, state, rev); pushPending = false; await get().pushState(); return }
+          if (!descends) { if (!await mergeInto(S, state, rev) || !isCurrent(tok)) return; pushPending = false; await get().pushState(); return }
           if (!changed) { const next = sanitizeAccent(Object.assign(clone(DEF), state)); next.active = carryActive(S, next); adopt(next, rev); confirmed(get().S); return }
-          mergeInto(S, state, rev)
+          if (!await mergeInto(S, state, rev) || !isCurrent(tok)) return
           pushPending = false
           await get().pushState()
         } catch (e) { if (isCurrent(tok)) failed(e) /* keep local; the poll retries */ }
@@ -2159,7 +2171,7 @@ export const useStore = create((set, get) => {
       let prepared = false
       const user = await connect(url, code, async (u, base) => {
         const owner = readOwner()
-        prepared = !!owner && (owner !== u.id || serverBase() !== base)
+        prepared = !!owner && (owner !== u.id || (!!serverBase() && serverBase() !== base))
         if (prepared) await prepareMobileSwitch(u, base)
       })
       await get().afterConnect(user, url, ask, prepared)
@@ -2170,7 +2182,7 @@ export const useStore = create((set, get) => {
       let prepared = false
       const user = await connectWithProvider(url, label, undefined, async (u, base) => {
         const owner = readOwner()
-        prepared = !!owner && (owner !== u.id || serverBase() !== base)
+        prepared = !!owner && (owner !== u.id || (!!serverBase() && serverBase() !== base))
         if (prepared) await prepareMobileSwitch(u, base)
       })
       await get().afterConnect(user, url, ask, prepared)
