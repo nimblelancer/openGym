@@ -15,7 +15,7 @@ it('actual media-sync uploads, retries, deduplicates, downloads and refuses stal
   const AUTH_SECRET=randomBytes(32).toString('hex'),SETUP_CODE=randomBytes(32).toString('hex')
   const runner=await localRunner('wrangler.web-media.jsonc',{cwd:resolve('../cloudflare-poc'),health:'/api/health',privateLogs:true,syntheticDiagnostics:true,vars:origin=>({AUTH_SECRET,SETUP_CODE,API_ORIGIN:origin,RP_ID:'localhost',P5_MEDIA:'1'})})
   const dev=authenticator({rp:'localhost',origin:runner.origin})
-  let cookie='',offline=false,uploads=0,count=0
+  let cookie='',offline=false,uploads=0,count=0,dropAckHash=null
   const calls=[]
   const transport=async(url,init={})=>{
     const u=new URL(String(url),runner.base)
@@ -28,6 +28,7 @@ it('actual media-sync uploads, retries, deduplicates, downloads and refuses stal
       const req=request(u.href,{family:4,method:init.method||'GET',headers:Object.fromEntries(h)},r=>{
         const parts=[];r.on('data',c=>parts.push(c));r.on('error',fail);r.on('end',()=>{
           const b=Buffer.concat(parts);calls.push({path:u.pathname,method:init.method||'GET',status:r.statusCode,want:h.get('x-opengym-account')})
+          if(init.method==='PUT'&&u.pathname==='/api/media/'+dropAckHash&&r.statusCode===201){dropAckHash=null;fail(Error('synthetic lost upload acknowledgement'));return}
           ok({ok:r.statusCode>=200&&r.statusCode<300,status:r.statusCode,body:null,headers:{get:k=>r.headers[k.toLowerCase()]??null,getSetCookie:()=>r.headers['set-cookie']||[]},json:async()=>JSON.parse(b),text:async()=>b.toString(),blob:async()=>new Blob([new Uint8Array(b)])})
         })
       })
@@ -73,6 +74,28 @@ it('actual media-sync uploads, retries, deduplicates, downloads and refuses stal
     await expect(apiUpload('/api/media/'+hash,new Blob([bytes]),'image/png',{XHR:LoopbackXHR,headers:{'X-OpenGym-Account':'stale-owner'}})).rejects.toMatchObject({status:409,code:'account-mismatch'})
     const usage=await api('/api/media/missing',{method:'POST',body:JSON.stringify({hashes:[hash]})})
     expect(usage.missing).toEqual([]);expect(usage.usage.count).toBe(1)
+    // The server commits the whole file, then the transport drops the 201. A retry
+    // must reconcile /missing without another PUT or clearing pending prematurely.
+    const bytes2=Uint8Array.from(Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aZ1sAAAAASUVORK5CYII=','base64'))
+    // Distinct synthetic byte sequence; server checks header/hash, not a full decode.
+    const distinct=Uint8Array.from([...bytes2,0])
+    const h2=sha(distinct),ref2={...ref,hash:h2,size:distinct.length}
+    S.customEx.push({id:'lost-ack',media:ref2})
+    const cur=await api('/api/data')
+    await api('/api/data',{method:'PUT',body:JSON.stringify({state:S,baseRev:cur.rev,baseWid:cur.state._wid,stamped:true})})
+    await local.put(h2,new Blob([distinct],{type:'image/png'}),{mime:'image/png',pending:true})
+    const before=uploads;dropAckHash=h2
+    await sync.syncMedia({force:true})
+    expect(dropAckHash).toBeNull()
+    expect(uploads).toBe(before+1)
+    expect([...local.pendingNow()]).toContain(h2)
+    const committed=await api('/api/media/missing',{method:'POST',body:JSON.stringify({hashes:[h2]})})
+    expect(committed.missing).toEqual([]);expect(committed.usage.count).toBe(2)
+    await sync.syncMedia({force:true})
+    expect([...local.pendingNow()]).not.toContain(h2);expect(uploads).toBe(before+1)
+    expect(await make(second).fetchToStore(h2,ref2,{force:true})).toBe(true)
+    expect(sha(new Uint8Array(await (await second.get(h2)).blob.arrayBuffer()))).toBe(h2)
+    console.log('PHASE5_LOST_UPLOAD_ACK_RECONCILIATION PASS')
     const proof=(await post('/api/login/options',{})).data
     const pair=(await post('/api/pair/create',{cid:proof.cid,credential:dev.login(proof.options.challenge,++count)})).data
     const paired=(await post('/api/pair/redeem',{code:pair.code})).data
