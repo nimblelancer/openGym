@@ -174,3 +174,39 @@ jobs:
           path: cloudflare-poc/reports/assets.json
           if-no-files-found: warn
           retention-days: 7
+
+  web-media:
+    if: github.ref == 'refs/heads/feat/cloudflare-migration'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1
+        with:
+          node-version: '26'
+      - run: npm ci --no-audit --no-fund
+        working-directory: cloudflare-poc
+      - run: npm ci --ignore-scripts --no-audit --no-fund
+        working-directory: frontend
+      - run: npm run build
+        working-directory: frontend
+      - run: node scripts/catalogue/stage-media.mjs frontend/dist
+      - name: Phase 5 local web and private R2 tests
+        working-directory: cloudflare-poc
+        run: |
+          mkdir -p reports
+          node --check src/media.js
+          node --check src/web-worker.js
+          status=0
+          /usr/bin/time -v -o reports/web-media-process-profile.txt node --test --test-concurrency=1 test/web-media.test.mjs || status=$?
+          cat reports/web-media-process-profile.txt
+          exit "$status"
+      - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f
+        if: always()
+        with:
+          name: phase5-web-media-process-profile
+          path: cloudflare-poc/reports/web-media-process-profile.txt
+          if-no-files-found: warn
+          retention-days: 7
