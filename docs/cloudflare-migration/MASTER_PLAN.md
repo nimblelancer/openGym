@@ -113,3 +113,26 @@ Recommended resolution: correct client-side durable readback to verify actual se
 
 ## Owner-authorized Phase 4 freeze and Phase 5 sequencing (2026-11-26)
 Freeze Phase 4 validated LOCAL patched-client candidate 857550811adb4e4b16d562cdd9a4cc341d30eb1f, CI 45854636040 SUCCESS 6/6 jobs, 11217/11217 executions, 5/5 artifacts. Phase 4 remains OPEN. Explicit owner authorization supersedes the earlier stop on starting local Phase 5 ONLY for synthetic/local engineering and GitHub Actions. Official native release/update (R6), P4-09 residual safety (web/stale-tab preservation, pairing atomicity, concurrent stash operations, tombstone sole-medium loss, divergent active sessions and physical durability), P4-11/12/13 remaining physical/UI tests, M4-01..10/P4-15, P4-16 and P3-04/P3-21 remain mandatory, deferred NOT waived; resolve and verify on the integrated candidate before Phase 7 acceptance or any production decision. Do not equate patched source with installed official app. Preserve tested Phase 4 source/tests; rerun regressions if affected. No production, remote resources, personal data, public upstream issue/PR, native rebuild, main merge or Learning Hub changes. Continue Phase 5 local Web & Media work; new failures remain stop conditions for their affected implementation and all release decisions. Hosted quota/CPU/staging still requires separate authorization.
+
+## Phase 5 initial implementation checkpoint (2026-11-26)
+Candidate 512cfed2; CI [45857925985](https://github.com/nimblelancer/openGym/actions/runs/45857925985), seven jobs (six prior jobs unchanged plus web-media). Execution results pending; intermediate Contents API commits also trigger push CI, only final candidate qualifies. Reviewed diff from frozen 85755081: no frontend, upstream API/Docker, mobile source, Phase 4 fixtures, dependencies, or Learning Hub changes. Phase 3 auth coordinator changed only for opt-in media routing and Range CORS; must rerun auth/mobile regressions.
+P5-A: documented upstream contracts and refs. P5-B: web-worker.js serves actual frontend/dist on same loopback origin with worker-first API, explicit 404 for unknown API/unsupported MCP and well-known, navigation-only SPA fallback, upstream CSP and hashed/static cache policy, no cache of private media. P5-C: media.js implements owner-derived private/v1/UID/hash R2 keys, authenticated/CSRF/expected account gates, bounded bytes and idle timeout, SHA256 and R2 checksum, header/category/dimension/duration checks, existing-object deduplication, missing/usage, single in-flight media request admission, 200 MiB/500-object local quota, GET/HEAD single byte-range, no-store and sandbox headers. Rechecks session after async operations. Experimental flag only in wrangler.web-media.jsonc, separate local R2 and ASSETS, old harnesses remain media-off. Audio intentionally disabled; strict 8 MiB video cap, known duration/dimensions required, 2 MiB still and 8 MiB GIF. This is bounded buffering and metadata validation, not full decode or production streaming/free-tier qualification. P5-D: sweep returns explicit 503 and account delete with media returns 503, preserves data pending cross-store recovery; no automatic GC or orphan deletion. P5-E: web-media.test.mjs has four authored tests: bounded validation, mocked R2 failure/quota/revocation/isolation, upstream reference shapes/local-only video, real local Worker built SPA/private R2 cookie+bearer/hash+range+restart+revocation. Tests not yet accepted. Existing six jobs preserved; extra GNU time artifact. No physical or mounted browser media UI claims. P5-F open.
+| ID | Candidate evidence/status |
+|---|---|
+| P5-01 | DOCUMENTED initial inventory |
+| P5-02 | Historical build PASS; latest CI required |
+| P5-03 | Authored actual asset/SPA/API HTTP test; CI REQUIRED |
+| P5-04 | Authored CSP/cache/notice exact content and catalogue HEAD tests; CI REQUIRED |
+| P5-05 | Authored private namespace and owner isolation tests; CI REQUIRED |
+| P5-06 | Authored CSRF, expected account, bearer/CORS and revocation tests; CI REQUIRED |
+| P5-07 | Authored byte/hash/sniff/duration tests; CI REQUIRED; full format parity and audio open |
+| P5-08 | Authored dedup/missing/usage/quota; CI REQUIRED; concurrency fault test outstanding |
+| P5-09 | Authored GET/range/headers/restart; CI REQUIRED |
+| P5-10 | Authored mock R2 failure/no-commit/revoke; CI REQUIRED; real interrupted upload and recovery open |
+| P5-11 | Authored ref walker/local-only test; CI REQUIRED; actual frontend media-sync integration open |
+| P5-12 | BLOCKED/OPEN: cross-store sweep/reset/account deletion and corrupt-state recovery |
+| P5-13 | OPEN: mounted web client and installed app |
+| P5-14 | Seven-job CI pending |
+| P5-15 | Hosted and recovery gates deferred, not waived |
+| P5-16 | OPEN |
+Local only, do not deploy any wrangler fixture. Next review final CI logs and artifacts, correct confirmed failures, then complete safe cross-store cleanup and actual client integration before accepting Phase 5. Preserve Phase 4 freeze and all previously deferred gates; no native rebuild, upstream publication, production, main merge, remote Cloudflare resources, real data or Learning Hub changes.
