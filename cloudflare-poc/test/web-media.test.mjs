@@ -2,6 +2,9 @@ import {test} from 'node:test';
 import assert from 'node:assert/strict';
 import {createHash,randomBytes} from 'node:crypto';
 import {readFile,readdir} from 'node:fs/promises';
+import {join} from 'node:path';
+import {DatabaseSync} from 'node:sqlite';
+import {MediaLifecycle,GRACE_MS} from '../src/media-lifecycle.js';
 import {localRunner} from './local-runner.mjs';
 import {authenticator} from './auth-fixture.mjs';
 import {inspect,parseRange,boundedBytes,handleMedia,inventory} from '../src/media.js';
@@ -54,6 +57,45 @@ test('all supported media reference locations and local-only set behavior',()=>{
   assert.equal(uploadableFiles(local).length,0);
   assert.equal(referencedHashes(local).size,2);
 });
+test('GC marks survive restart, preserve references, and retry failed deletion',async()=>{
+  const uid='abcdefghijklmnop',key='private/v1/'+uid+'/'+hash;
+  const db=new DatabaseSync(':memory:');let now=Date.now(),state={kind:'ok',state:{workouts:[]}},live=true,fail=false;
+  db.exec('CREATE TABLE auth_users (id TEXT PRIMARY KEY, disabled INTEGER, sv INTEGER); CREATE TABLE auth_codes (uid TEXT); CREATE TABLE auth_challenges (id TEXT);');
+  db.prepare('INSERT INTO auth_users VALUES(?,0,0)').run(uid);
+  const repo={q:(sql,...args)=>db.prepare(sql).all(...args),one:(sql,...args)=>db.prepare(sql).get(...args),user:id=>db.prepare('SELECT * FROM auth_users WHERE id=?').get(id),tx:fn=>{db.exec('BEGIN');try{const r=fn();db.exec('COMMIT');return r;}catch(e){db.exec('ROLLBACK');throw e;}}};
+  const objects=new Map([[key,{key,size:image.length,uploaded:new Date(now),etag:'one'}]]);
+  const bucket={list:async({prefix})=>({objects:[...objects.values()].filter(o=>o.key.startsWith(prefix)),truncated:false}),head:async k=>objects.get(k),delete:async k=>{if(fail)throw Error('injected delete failure');for(const x of [k].flat())objects.delete(x)}};
+  const make=()=>new MediaLifecycle(repo,{read:async()=>state},bucket,{now:()=>now});
+  let l=make();
+  try{
+    assert.equal((await l.sweep(uid,()=>live)).body.removed,0);
+    now+=GRACE_MS+1;
+    state={kind:'corrupt'};assert.equal((await l.sweep(uid,()=>live)).status,503);assert.ok(objects.has(key));
+    state={kind:'ok',state:{customEx:[{media:{hash}}]}};
+    repo.tx(()=>l.noteState(uid,state.state));assert.equal((await l.sweep(uid,()=>live)).body.removed,0);
+    state={kind:'ok',state:{workouts:[]}};assert.equal((await l.sweep(uid,()=>live)).body.removed,0);
+    l=make();now+=GRACE_MS+1;fail=true;
+    await assert.rejects(l.sweep(uid,()=>live),/injected/);assert.ok(objects.has(key));
+    fail=false;assert.equal((await l.sweep(uid,()=>live)).body.removed,1);assert.equal(objects.size,0);
+    objects.set(key,{key,size:image.length,uploaded:new Date(now),etag:'two'});
+    // Durable intent is written before R2 deletion. A failed cleanup cannot finalize the account.
+    repo.tx(()=>l.begin(uid));assert.equal(repo.user(uid).disabled,1);
+    fail=true;let finalized=0;await assert.rejects(l.finish(uid,()=>{finalized++}),/injected/);
+    assert.equal(l.pending(),uid);assert.equal(finalized,0);assert.ok(objects.has(key));
+    fail=false;l=make();await l.finish(uid,id=>{repo.q('DELETE FROM auth_users WHERE id=?',id);finalized++});
+    assert.equal(l.pending(),null);assert.equal(finalized,1);assert.equal(objects.size,0);assert.equal(repo.user(uid),undefined);
+    console.log('PHASE5_LIFECYCLE_FAULT_RECOVERY PASS');
+  }finally{db.close();}
+});
+async function findAuthDb(root){
+  for(const entry of await readdir(root,{withFileTypes:true})){
+    const p=join(root,entry.name);
+    if(entry.isDirectory()){const found=await findAuthDb(p);if(found)return found;}
+    else if(entry.isFile()&&entry.name.endsWith('.sqlite')){
+      const db=new DatabaseSync(p,{timeout:5000});try{if(db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='auth_version'").get())return p;}finally{db.close();}
+    }
+  }
+}
 test('actual local Worker: SPA, private R2, authenticated media contract and restart',{timeout:180000},async()=>{
   const AUTH_SECRET=randomBytes(32).toString('hex'),SETUP_CODE=randomBytes(32).toString('hex');
   const runner=await localRunner('wrangler.web-media.jsonc',{health:'/api/health',privateLogs:true,syntheticDiagnostics:true,vars:origin=>({AUTH_SECRET,SETUP_CODE,API_ORIGIN:origin,RP_ID:'localhost',P5_MEDIA:'1'})});
@@ -137,11 +179,25 @@ test('actual local Worker: SPA, private R2, authenticated media contract and res
     const nextPair=await data(await post('/api/pair/create',{cid:pairOpts.cid,credential:dev.login(pairOpts.options.challenge,++count)},auth()));
     const nextToken=(await data(await post('/api/pair/redeem',{code:nextPair.code}))).token;
     const deleting={authorization:'Bearer '+nextToken,origin:'capacitor://localhost'};
-    assert.equal((await data(await post('/api/account/delete',{name:'Synthetic Owner'},deleting))).ok,true);
+    // Interrupt the final SQLite transaction after R2 cleanup. The intent and disabled
+    // owner must survive restart; health recovery finishes only the authorized deletion.
+    await runner.stop();const dbPath=await findAuthDb(runner.dir);assert.ok(dbPath);
+    let db=new DatabaseSync(dbPath,{timeout:5000});
+    try{db.exec("CREATE TRIGGER test_fail_finalize BEFORE DELETE ON auth_users BEGIN SELECT RAISE(ABORT,'synthetic finalize failure'); END;");}finally{db.close();}
+    await runner.start();
+    assert.equal((await post('/api/account/delete',{name:'Synthetic Owner'},deleting)).status,503);
+    assert.equal((await raw(path,'GET',undefined,deleting)).status,503);
+    await runner.stop();db=new DatabaseSync(dbPath,{timeout:5000});
+    try{
+      assert.equal(db.prepare('SELECT uid FROM media_delete_intent').get().uid,uid);
+      assert.equal(db.prepare('SELECT disabled FROM auth_users WHERE id=?').get(uid).disabled,1);
+      assert.equal(db.prepare('SELECT count(*) AS n FROM profile_state').get().n,1);
+      db.exec('DROP TRIGGER test_fail_finalize;');
+    }finally{db.close();}
+    await runner.start();assert.equal((await data(await raw('/api/health'))).users,0);
     assert.equal((await raw(path,'GET',undefined,deleting)).status,401);
-    assert.equal((await data(await raw('/api/health'))).users,0);
-    await runner.stop();await runner.start();
-    assert.equal((await data(await raw('/api/health'))).users,0);
+    await runner.stop();db=new DatabaseSync(dbPath,{timeout:5000});
+    try{for(const table of ['media_delete_intent','media_gc','auth_users','auth_creds','profile_state','profile_chunks'])assert.equal(db.prepare('SELECT count(*) AS n FROM '+table).get().n,0,table);}finally{db.close();}
     console.log('PHASE5_RESET_GRACE_ACCOUNT_DELETE PASS');
   }finally{await runner.cleanup();}
 });
