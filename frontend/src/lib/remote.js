@@ -51,20 +51,24 @@ export async function renewToken(remote, token) {
 
 // Redeems the pairing code, wires api.js at the resolved base, and persists the connection so
 // boot() can restore it on the next launch.
-export async function connect(rawUrl, code) {
+export async function connect(rawUrl, code, beforeConnect) {
   const base = normalizeServerUrl(rawUrl)
   if (!base) throw new Error('Enter a valid server address')
   const { token, user } = await pairRedeem(base, String(code || '').trim())
+  // The store may need to preserve the previous account before changing credentials.
+  if (beforeConnect) await beforeConnect(user, base)
   setRemoteAuth(base, token)
   await saveRemoteFile({ mode: 'remote', base, token, user })
   return user
 }
 
 // The same, through the server's identity provider instead of a pairing code (lib/oidc-app.js).
-export async function connectWithProvider(rawUrl, label, signIn = phoneSignIn) {
+export async function connectWithProvider(rawUrl, label, signIn = phoneSignIn, beforeConnect) {
   const base = normalizeServerUrl(rawUrl)
   if (!base) throw new Error('Enter a valid server address')
   const { token, user } = await signIn(base, label)
+  // The store may need to preserve the previous account before changing credentials.
+  if (beforeConnect) await beforeConnect(user, base)
   setRemoteAuth(base, token)
   await saveRemoteFile({ mode: 'remote', base, token, user })
   return user
