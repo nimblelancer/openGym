@@ -10,7 +10,7 @@ import {MediaLifecycle,GRACE_MS,DELETE_BATCH,SWEEP_BATCH} from '../src/media-lif
 import {localRunner} from './local-runner.mjs';
 import {authenticator} from './auth-fixture.mjs';
 import {inspect,parseRange,boundedBytes,readMediaJson,handleMedia,inventory} from '../src/media.js';
-import {jpeg,png,gif,webpVp8x,mp4} from '../../frontend/src/lib/media-samples.test-util.js';
+import {jpeg,png,gif,webpVp8,webpVp8l,webpVp8x,mp4,webm} from '../../frontend/src/lib/media-samples.test-util.js';
 import {referencedHashes,uploadableFiles} from '../../frontend/src/lib/media-refs.js';
 const sha=b=>createHash('sha256').update(b).digest('hex');
 const MB=1024*1024;
@@ -31,6 +31,27 @@ test('bounded input, content sniff, dimensions, declared category, duration and 
   assert.deepEqual(parseRange('bytes=-5',20),{offset:15,length:5});
   assert.deepEqual(parseRange('bytes=15-',20),{offset:15,length:5});
   for(const bad of ['bytes=20-','bytes=3-2','bytes=0-1,5-6','bytes=-0','bytes=-9999999999999999999999999999999999'])assert.equal(parseRange(bad,20),false);
+});
+// Match the pinned client sound-ingest.js encoder (44-byte PCM header).
+function wav(samples=2205){
+  const b=Buffer.alloc(44+samples*2);
+  b.write('RIFF',0);b.writeUInt32LE(b.length-8,4);b.write('WAVEfmt ',8);b.writeUInt32LE(16,16);
+  b.writeUInt16LE(1,20);b.writeUInt16LE(1,22);b.writeUInt32LE(22050,24);b.writeUInt32LE(44100,28);
+  b.writeUInt16LE(2,32);b.writeUInt16LE(16,34);b.write('data',36);b.writeUInt32LE(b.length-44,40);
+  return b;
+}
+test('pinned format compatibility: MOV, WebM, WebP variants and canonical PCM WAV',()=>{
+  for(const [b,m] of [[mp4({brand:'qt  '}).file,'video/quicktime'],[webm(),'video/webm'],[webpVp8(),'image/webp'],[webpVp8l(),'image/webp'],[wav(),'audio/wav'],[wav(30*22050),'audio/wav']])
+    assert.equal(inspect(b,m).mime,m);
+  for(const b of [wav(0),wav(30*22050+1),wav().subarray(0,45)])assert.equal(inspect(b,'audio/wav').status,415);
+  for(const [offset,value] of [[4,0],[16,0],[24,0],[28,0],[40,0]]){
+    const b=wav();b.writeUInt32LE(value,offset);assert.equal(inspect(b,'audio/wav').status,415);
+  }
+  const stereo=wav();stereo.writeUInt16LE(2,22);assert.equal(inspect(stereo,'audio/wav').status,415);
+  assert.equal(inspect(wav(),'image/png').status,415);
+  assert.equal(inspect(webm({durationMs:62000}),'video/webm').status,413);
+  assert.equal(inspect(mp4({brand:'M4A '}).file,'video/mp4').status,415);
+  console.log('PHASE5_MEDIA_FORMAT_MATRIX PASS');
 });
 test('bounded upload rejects incomplete, oversized, stalled and trickling streams',async()=>{
   const req=(body,headers={})=>new Request('http://localhost/api/media/'+hash,{method:'PUT',body,headers,duplex:'half'});
@@ -173,7 +194,7 @@ test('actual local Worker: SPA, private R2, authenticated media contract and res
     const o=await data(await post('/api/register/options',{name:'Synthetic Owner',code:SETUP_CODE}));
     const reg=await post('/api/register/verify',{cid:o.cid,credential:dev.register(o.options.challenge)});
     const r=await data(reg);uid=r.user.id;cookie=reg.headers.getSetCookie()[0].split(';')[0];
-    const cfg=await data(await raw('/api/config','GET',undefined,auth()));assert.equal(cfg.media.videoMB,8);assert.equal(cfg.media.sounds,false);
+    const cfg=await data(await raw('/api/config','GET',undefined,auth()));assert.equal(cfg.media.videoMB,8);assert.equal(cfg.media.sounds,true);
     assert.equal((await put(image,hash,{origin:'https://hostile.invalid'})).status,403);
     assert.equal((await put(image,hash,{'x-opengym-account':'not-this-owner'})).status,409);
     assert.equal((await put(image,other)).status,400);
@@ -240,10 +261,17 @@ test('actual local Worker: SPA, private R2, authenticated media contract and res
     assert.equal((await raw('/api/me','GET',undefined,mobile)).status,200);
     assert.equal((await post('/api/account/delete',{name:'wrong name'},mobile)).status,400);
     assert.equal((await raw(path,'HEAD',undefined,mobile)).status,200);
+    const audio=wav(),audioHash=sha(audio);
+    const uploadedAudio=await data(await raw('/api/media/'+audioHash,'PUT',audio,{'content-type':'audio/wav',...auth(),'x-opengym-account':uid}),201);
+    assert.equal(uploadedAudio.mime,'audio/wav');
+    const gotAudio=await raw('/api/media/'+audioHash,'GET',undefined,auth());
+    assert.equal(gotAudio.status,200);assert.equal(gotAudio.headers.get('content-type'),'audio/wav');
+    assert.deepEqual(Buffer.from(await gotAudio.arrayBuffer()),audio);
+    console.log('PHASE5_CANONICAL_AUDIO_R2 PASS');
     console.log('PHASE5_PRIVATE_MEDIA_AUTH_RANGE PASS');
     await runner.stop();await runner.start();
     const back=await raw(path,'GET',undefined,auth());assert.equal(back.status,200);assert.deepEqual(Buffer.from(await back.arrayBuffer()),image);
-    assert.equal((await data(await post('/api/media/missing',{hashes:[hash]},auth()))).usage.bytes,image.length);
+    assert.equal((await data(await post('/api/media/missing',{hashes:[hash]},auth()))).usage.bytes,image.length+audio.length);
     await data(await post('/api/logout/all',{},auth()));
     assert.equal((await raw(path,'GET',undefined,mobile)).status,401);
     assert.equal((await raw(path,'GET',undefined,auth())).status,401);
