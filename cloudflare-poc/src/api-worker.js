@@ -55,7 +55,7 @@ export class AuthCoordinator extends DurableObject{
       if(pending){
         if(key!=='GET /api/health'||this.mediaBusy)return this.respond(req,err(503,'account deletion pending','media-cleanup-pending'));
         this.mediaBusy=true;
-        try{await this.lifecycle.finish(pending,uid=>this.removeAccount(uid));}
+        try{if(!await this.lifecycle.finish(pending,uid=>this.removeAccount(uid)))return this.respond(req,err(503,'account deletion pending','media-cleanup-pending'));}
         finally{this.mediaBusy=false;}
       }
       const isMedia=!!this.media&&mediaRoute(req.method,u.pathname);
@@ -102,7 +102,7 @@ export class AuthCoordinator extends DurableObject{
           if(!current)return this.respond(req,denied());
           r=await this.route(req,u,key,s,b);
           if(r.status===200&&this.lifecycle.pending()===current.id){
-            await this.lifecycle.finish(current.id,uid=>this.removeAccount(uid));
+            if(!await this.lifecycle.finish(current.id,uid=>this.removeAccount(uid)))return this.respond(req,err(503,'account deletion pending','media-cleanup-pending'));
             r=ok({ok:true},null);
           }
         }finally{this.mediaBusy=false;}
