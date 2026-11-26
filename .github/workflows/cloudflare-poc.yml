@@ -214,6 +214,14 @@ jobs:
           /usr/bin/time -v -o ../cloudflare-poc/reports/media-client-process-profile.txt node node_modules/vitest/vitest.mjs run "$target" --maxWorkers=1 || status=$?
           cat ../cloudflare-poc/reports/media-client-process-profile.txt
           exit "$status"
+      - run: google-chrome --version
+      - name: Mounted browser SPA private media gallery
+        working-directory: cloudflare-poc
+        run: |
+          status=0
+          /usr/bin/time -v -o reports/web-browser-process-profile.txt node --test --test-concurrency=1 test/web-browser.test.mjs || status=$?
+          cat reports/web-browser-process-profile.txt
+          exit "$status"
       - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f
         if: always()
         with:
@@ -221,5 +229,6 @@ jobs:
           path: |
             cloudflare-poc/reports/web-media-process-profile.txt
             cloudflare-poc/reports/media-client-process-profile.txt
+            cloudflare-poc/reports/web-browser-process-profile.txt
           if-no-files-found: warn
           retention-days: 7
