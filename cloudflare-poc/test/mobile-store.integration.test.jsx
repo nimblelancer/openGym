@@ -243,6 +243,9 @@ it('actual upstream store: offline conflict, failed acknowledgements, revoke, st
     expect(staleResult.stashed,'an unchanged stale file must not count as a newly durable stash').toBe(false)
     expect(ids(store.getState().S)).toContain('owed')
     expect(readFile('opengym-remote.json').mode).toBe('remote')
+    expect(store.getState().user.id).toBe(home.uid)
+    expect(realStorage.getItem('gym_owner')).toBe(home.uid)
+    console.log('PHASE4_DUAL_STASH_FAILURE_OWNER_RETAINED PASS')
     h.files.delete('DATA/opengym-stash.json')
   }finally{vi.stubGlobal('localStorage',realStorage);h.refuse.delete('opengym-stash.json')}
   const kept=await store.getState().disconnectServer({force:true})
