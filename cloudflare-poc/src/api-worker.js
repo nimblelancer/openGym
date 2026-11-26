@@ -228,7 +228,8 @@ export class AuthCoordinator extends DurableObject{
       return key.endsWith('/rev')?revisionResponse(await this.s.revision(s.uid)):stateResponse(await this.s.read(s.uid));
     }
     if(key==='PUT /api/data'){
-      if(this.mediaBusy)return err(409,'media busy','busy');
+      // Upstream treats every state PUT 409 as a revision conflict with a server document.
+      if(this.mediaBusy)return err(503,'media busy','busy');
       try{return a.tx(()=>{if(!live())return denied();const invalid=validate(b);if(invalid)return invalid;
         const next=transition(this.s.current(s.uid),b);if(next.next){this.s.save(s.uid,next.next);this.lifecycle?.noteState(s.uid,next.next);}return {status:next.status,body:next.body};
       });}catch(e){return this.s.error(s.uid,e).kind==='too_large'?err(413,'state too large after stamping'):err(503,'state unreadable');}
