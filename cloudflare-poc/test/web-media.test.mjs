@@ -9,7 +9,7 @@ import {DatabaseSync} from 'node:sqlite';
 import {MediaLifecycle,GRACE_MS,DELETE_BATCH,SWEEP_BATCH} from '../src/media-lifecycle.js';
 import {localRunner} from './local-runner.mjs';
 import {authenticator} from './auth-fixture.mjs';
-import {inspect,parseRange,boundedBytes,handleMedia,inventory} from '../src/media.js';
+import {inspect,parseRange,boundedBytes,readMediaJson,handleMedia,inventory} from '../src/media.js';
 import {jpeg,png,gif,webpVp8x,mp4} from '../../frontend/src/lib/media-samples.test-util.js';
 import {referencedHashes,uploadableFiles} from '../../frontend/src/lib/media-refs.js';
 const sha=b=>createHash('sha256').update(b).digest('hex');
@@ -46,6 +46,11 @@ test('bounded upload rejects incomplete, oversized, stalled and trickling stream
   let timer,stopped=false;
   const trickle=new ReadableStream({start(c){timer=setInterval(()=>c.enqueue(Uint8Array.of(1)),3);},cancel(){clearInterval(timer);stopped=true;}});
   try{await assert.rejects(boundedBytes(req(trickle),4096,{idleMs:100,totalMs:35}),e=>e.status===408);assert.equal(stopped,true);}finally{clearInterval(timer);}
+  const jsonReq=(b,mime='application/json')=>req(chunks([Buffer.from(b)]),{'content-type':mime});
+  assert.deepEqual(await readMediaJson(jsonReq('{"hashes":[]}'),80),{hashes:[]});
+  await assert.rejects(readMediaJson(jsonReq('[]'),80),e=>e.status===400);
+  await assert.rejects(readMediaJson(jsonReq('{}','text/plain'),80),e=>e.status===415);
+  await assert.rejects(readMediaJson(jsonReq(' '.repeat(81)),80),e=>e.status===413);
   console.log('PHASE5_BOUNDED_UPLOAD_STREAMS PASS');
 });
 test('media failure and quota paths never acknowledge a missing write',async()=>{
@@ -57,7 +62,8 @@ test('media failure and quota paths never acknowledge a missing write',async()=>
   const noCommit={...blank,put:async()=>{put++}};
   assert.equal((await handleMedia(upload(),uid,noCommit,()=>live)).status,503);
   const quota={...blank,list:async()=>({objects:[{key:'private/v1/'+uid+'/'+other,size:200*MB}],truncated:false})};
-  assert.equal((await handleMedia(upload(),uid,quota,()=>live)).status,413);
+  const full=await handleMedia(upload(),uid,quota,()=>live);
+  assert.equal(full.status,413);assert.deepEqual(await full.json(),{error:'your space for photos and videos is full',code:'media-quota',usedMB:200,quotaMB:200});
   await assert.rejects(inventory({...blank,list:async()=>({objects:[],truncated:true})},uid),/inventory invalid/);
   const revoke={...blank,list:async()=>{live=false;return {objects:[],truncated:false}}};
   assert.equal((await handleMedia(upload(),uid,revoke,()=>live)).status,401);
@@ -95,6 +101,13 @@ test('GC marks survive restart, preserve references, and retry failed deletion',
     l=make();now+=GRACE_MS+1;fail=true;
     await assert.rejects(l.sweep(uid,()=>live),/injected/);assert.ok(objects.has(key));
     fail=false;assert.equal((await l.sweep(uid,()=>live)).body.removed,1);assert.equal(objects.size,0);
+    for(let n=0;n<SWEEP_BATCH+1;n++){const k='private/v1/'+uid+'/'+sha('sweep-'+n);objects.set(k,{key:k,size:1,uploaded:new Date(now),etag:'sweep-'+n});}
+    assert.equal((await l.sweep(uid,()=>live)).body.removed,0);
+    now+=GRACE_MS+1;
+    assert.equal((await l.sweep(uid,()=>live)).body.removed,SWEEP_BATCH);
+    assert.equal(objects.size,1);
+    assert.equal((await l.sweep(uid,()=>live)).body.removed,1);
+    assert.equal(objects.size,0);
     objects.set(key,{key,size:image.length,uploaded:new Date(now),etag:'two'});
     // Durable intent is written before R2 deletion. A failed cleanup cannot finalize the account.
     repo.tx(()=>l.begin(uid));assert.equal(repo.user(uid).disabled,1);
