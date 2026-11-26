@@ -3,7 +3,7 @@
 import { referencedHashes } from '../../frontend/src/lib/media-refs.js';
 import { inventory } from './media.js';
 export const GRACE_MS=14*86400000;
-const batch=32;
+export const SWEEP_BATCH=8, DELETE_BATCH=16;
 const uidOK=uid=>typeof uid==='string'&&/^[A-Za-z0-9_-]{16}$/.test(uid);
 const hashOf=o=>o.key.split('/').at(-1);
 export class MediaLifecycle{
@@ -45,7 +45,7 @@ export class MediaLifecycle{
         const uploaded=Number(new Date(o.uploaded));
         if(Number.isFinite(uploaded)&&uploaded>0&&now-Math.max(since,uploaded)>=GRACE_MS)out.push(o);
       }
-      return out.slice(0,batch);
+      return out.slice(0,SWEEP_BATCH);
     });
     let removed=0,freedBytes=0;
     for(const o of eligible){
@@ -70,17 +70,20 @@ export class MediaLifecycle{
   async finish(uid,finalize){
     if(!uidOK(uid)||this.pending()!==uid)throw Error('missing deletion intent');
     const before=await inventory(this.bucket,uid);
-    for(let at=0;at<before.objects.length;at+=batch){
-      const keys=before.objects.slice(at,at+batch).map(o=>o.key);
+    // Bound each recovery request; the durable intent stays until the last batch
+    // is verified. Return false (not success) when more work remains.
+    const keys=before.objects.slice(0,DELETE_BATCH).map(o=>o.key);
+    if(keys.length){
       await this.bucket.delete(keys);
       for(const key of keys)if(await this.bucket.head(key))throw Error('account media delete not verified');
     }
-    if((await inventory(this.bucket,uid)).usage.count)throw Error('account media remains');
+    if((await inventory(this.bucket,uid)).usage.count)return false;
     this.a.tx(()=>{
       if(this.pending()!==uid||!this.a.user(uid)?.disabled)throw Error('deletion intent changed');
       finalize(uid);
       this.a.q('DELETE FROM media_gc WHERE uid=?',uid);
       this.a.q('DELETE FROM media_delete_intent WHERE uid=?',uid);
     });
+    return true;
   }
 }
