@@ -11,9 +11,9 @@ test('Chrome CDP virtual resident passkey on localhost, actual browser cookie',{
   const {runner,SETUP_CODE}=await fixture();const dir=await mkdtemp(join(tmpdir(),'opengym-chrome-'));let browser,ws;
   try{
     await runner.start();
-    browser=spawn(process.env.CHROME_BIN||'google-chrome',['--headless','--no-sandbox','--disable-dev-shm-usage','--remote-debugging-port=0','--user-data-dir='+dir,'about:blank'],{stdio:'ignore'});
+    browser=spawn(process.env.CHROME_BIN||'google-chrome',['--headless','--no-sandbox','--disable-dev-shm-usage','--remote-debugging-port=0','--user-data-dir='+dir,'about:blank'],{stdio:'ignore',detached:true});
     let launchError;browser.on('error',e=>launchError=e);
-    let port;for(let i=0;i<100;i++){if(launchError)throw launchError;if(browser.exitCode!==null)throw Error('Chrome exited');try{port=(await readFile(join(dir,'DevToolsActivePort'),'utf8')).split('\n')[0];break;}catch{}await sleep(100);}
+    let port;for(let i=0;i<300;i++){if(launchError)throw launchError;if((browser.exitCode!==null||browser.signalCode!==null))throw Error('Chrome exited');try{port=(await readFile(join(dir,'DevToolsActivePort'),'utf8')).split('\n')[0];break;}catch{}await sleep(100);}
     assert.ok(port,'Chrome CDP unavailable');
     const targets=await (await fetch('http://127.0.0.1:'+port+'/json/list')).json(),page=targets.find(t=>t.type==='page');assert.ok(page);
     ws=new WebSocket(page.webSocketDebuggerUrl);await new Promise((resolve,reject)=>{ws.addEventListener('open',resolve,{once:true});ws.addEventListener('error',reject,{once:true});});
@@ -37,7 +37,7 @@ test('Chrome CDP virtual resident passkey on localhost, actual browser cookie',{
       return {created:created.user.name,me:me.user.name,gone,logged:logged.user.name,httpOnly:!document.cookie.includes('gymsid')};
     })()`);
     assert.deepEqual(result,{created:'Browser fixture',me:'Browser fixture',gone:401,logged:'Browser fixture',httpOnly:true});console.log('PHASE3_BROWSER_VIRTUAL_PASSKEY PASS');
-  }finally{ws?.close();if(browser&&browser.exitCode===null&&browser.pid){const done=once(browser,'exit');browser.kill('SIGKILL');await done;}await runner.cleanup();await rm(dir,{recursive:true,force:true});}
+  }finally{ws?.close();if(browser&&browser.exitCode===null&&browser.pid){const done=once(browser,'exit');try{process.kill(-browser.pid,'SIGKILL');}catch(e){if(e.code!=='ESRCH')throw e;}await done;}await runner.cleanup();await rm(dir,{recursive:true,force:true,maxRetries:10,retryDelay:200});}
 });
 
 test('manual localhost UI and proxy smoke with Chrome virtual authenticator',{timeout:150000},async()=>{
@@ -54,9 +54,9 @@ test('manual localhost UI and proxy smoke with Chrome virtual authenticator',{ti
     assert.ok(origin&&code,'manual launcher readiness timeout');
     // Use the same localhost authority as the browser; Fetch does not reliably permit Host overrides.
     const health=await fetch(origin+'/api/health');assert.equal(health.status,200);
-    browser=spawn(process.env.CHROME_BIN||'google-chrome',['--headless','--no-sandbox','--disable-dev-shm-usage','--remote-debugging-port=0','--user-data-dir='+dir,'about:blank'],{stdio:'ignore'});
+    browser=spawn(process.env.CHROME_BIN||'google-chrome',['--headless','--no-sandbox','--disable-dev-shm-usage','--remote-debugging-port=0','--user-data-dir='+dir,'about:blank'],{stdio:'ignore',detached:true});
     let launchError;browser.on('error',e=>launchError=e);
-    let port;for(let i=0;i<100;i++){if(launchError)throw launchError;if(browser.exitCode!==null)throw Error('Chrome exited');try{port=(await readFile(join(dir,'DevToolsActivePort'),'utf8')).split('\n')[0];break;}catch{}await sleep(100);}
+    let port;for(let i=0;i<300;i++){if(launchError)throw launchError;if((browser.exitCode!==null||browser.signalCode!==null))throw Error('Chrome exited');try{port=(await readFile(join(dir,'DevToolsActivePort'),'utf8')).split('\n')[0];break;}catch{}await sleep(100);}
     assert.ok(port,'Chrome CDP unavailable');
     const targets=await (await fetch('http://127.0.0.1:'+port+'/json/list')).json(),page=targets.find(t=>t.type==='page');assert.ok(page);
     ws=new WebSocket(page.webSocketDebuggerUrl);await new Promise((resolve,reject)=>{ws.addEventListener('open',resolve,{once:true});ws.addEventListener('error',reject,{once:true});});
@@ -84,8 +84,8 @@ test('manual localhost UI and proxy smoke with Chrome virtual authenticator',{ti
     console.log('PHASE3_MANUAL_HARNESS_VIRTUAL_SMOKE PASS');
   }finally{
     ws?.close();
-    if(browser&&browser.exitCode===null&&browser.pid){const done=once(browser,'exit');browser.kill('SIGKILL');await done;}
+    if(browser&&browser.exitCode===null&&browser.pid){const done=once(browser,'exit');try{process.kill(-browser.pid,'SIGKILL');}catch(e){if(e.code!=='ESRCH')throw e;}await done;}
     if(launcher&&launcher.exitCode===null&&launcher.pid){const done=once(launcher,'exit');launcher.kill('SIGTERM');await done;}
-    await rm(dir,{recursive:true,force:true});
+    await rm(dir,{recursive:true,force:true,maxRetries:10,retryDelay:200});
   }
 });
