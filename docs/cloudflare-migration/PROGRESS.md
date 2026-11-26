@@ -341,3 +341,26 @@ Baseline: Phase 3 45657223798 SUCCESS, all five jobs. GitHub branch listing and 
 | P4-15 | official installed mobile app checklist M4-01..10; no rebuild or actual device test | DEFERRED, NOT WAIVED |
 | P4-16 | feature branch scope, no main/deploy/remote resources; owner acceptance remains open, P3-04/P3-21 deferred | OPEN |
 Work packages P4-A documented, B/C/D authored test implementation (not yet validated; P4-13 and OS-specific evidence incomplete), E CI configured + manual plan, F checkpoint only. Phase 4 remains OPEN, not ready to enter Phase 5 under the agreed local validation gate. Physical owner acceptance deferred to consolidated session before Phase 7 closure, but automated run availability is a separate blocker. No Cloudflare resources or Learning Hub changes.
+
+## Hotfix 002 review and additional data-preservation gate (2026-11-26)
+CI 45846900403 on f6a24944 SUCCESS, all six jobs. POC 6/6, storage 6/6, auth 9/9 (virtual passkey and manual harness virtual smoke PASS), upstream API 1084/1084, frontend 10101/10101, mobile 2/2; 11208 tests total. Both PHASE4_REAL_STORE_STASH_CONFLICT_RESET and PHASE4_PINNED_MOBILE_MODULES PASS. Dual fault injection verified both writes actually failed and disconnect refused when no previous stash existed. All five ZIP artifacts downloaded, CRC and contents checked: lockfile blob equals repository 0cde099db0392a2583158df6911b3180d20698be; asset manifest 13345 assets, 13109 media, 242978231 bytes, largest 2091275 bytes, no oversized assets. Local process profiles (wall/user/system seconds, peak RSS KiB): storage 21.90/7.69/1.17/311436, auth 42.32/18.12/3.19/312960, mobile 12.50/9.85/1.84/537476; exit 0. Not hosted metrics. e67cb71 differs from tested commit only in PHASE_04.md.
+Source review found an additional data-loss risk: upstream useStore.js writeStashes() accepts a native readback with equal key count even if the content remains stale after failed writes. Existing passing test starts without a prior stash. Added a real-store synthetic regression on b23efe10 that preloads a stale native stash for the same server/account, rejects both writes, verifies fault counters and unchanged stale file, and requires disconnect to refuse and keep newer unsynced data. This is a source-supported risk, not a newly observed CI failure until the new run reports. Do not weaken the assertion or patch the Worker to fake success. If confirmed, determine an official-client-compatible mitigation; installed app cannot be assumed to contain a frontend source fix. No runtime change in this checkpoint.
+| ID | Hotfix 002 evidence / remaining gate |
+|---|---|
+| P4-01 | DOCUMENTED; installed version check manual |
+| P4-02 | PASS local pairing/replay |
+| P4-03 | PASS local native-origin headers/bearer; physical WebView deferred |
+| P4-04 | PASS local persistence/renewal/revocation/re-pair |
+| P4-05 | PASS actual store adoption and sync |
+| P4-06 | PASS actual store conflict |
+| P4-07 | PASS offline mirror, reconnect/cold boot |
+| P4-08 | PASS deletion/reset/rewind/restart |
+| P4-09 | PASS authored scenarios on f6a24944; additional stale-stash safety regression PENDING on b23efe10; gate OPEN |
+| P4-10 | PASS timeout and error handling |
+| P4-11 | PASS local nudge contract; native health/notification permissions manual |
+| P4-12 | PASS simulated native bridge and Access origin binding; physical networking deferred |
+| P4-13 | PASS scoped predicates/relay/core route assertions; mounted UI and media gates remain |
+| P4-14 | PASS integrated CI and all five artifacts on f6a24944; new regression CI pending |
+| P4-15 | DEFERRED M4-01..10, not waived |
+| P4-16 | OPEN owner acceptance |
+P4-A documented; B local pass; C/D baseline pass, expanded data-preservation gate open; E baseline CI/artifacts pass, new regression pending; F review recorded, acceptance open. Phase 4 OPEN. Phase 5 not started pending stale-stash safety result. P3-04/P3-21 and M4 manual remain deferred to consolidated session before Phase 7 closure. No remote resources, main merge, production deployment or Learning Hub changes.
