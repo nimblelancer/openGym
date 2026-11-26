@@ -1154,18 +1154,42 @@ export const useStore = create((set, get) => {
   const readStashes = async () => {
     let all = {}
     try { all = JSON.parse(localStorage.getItem(STASH_KEY)) || {} } catch { /* none */ }
-    if (MOBILE) { const f = await readJsonFile(STASH_FILE); if (f && typeof f === 'object') all = { ...all, ...f } }
+    if (MOBILE) {
+      const f = await readJsonFile(STASH_FILE)
+      if (f && typeof f === 'object') {
+        // Either medium may have refused the last write. Do not let an older native
+        // entry hide the newer localStorage copy (or the reverse).
+        for (const [key, entry] of Object.entries(f)) {
+          if (!all[key] || (Number(entry?.at) || 0) >= (Number(all[key]?.at) || 0)) all[key] = entry
+        }
+      }
+    }
     return all
   }
+  // A new entry is newer than either previous durable copy, even in the same clock
+  // tick or after the device clock has moved backwards.
+  const stashAt = previous => Math.max(Date.now(), (Number(previous?.at) || 0) + 1)
+  const sameStash = (a, b) => JSON.stringify(a) === JSON.stringify(b)
   // True when at least one durable copy of the stashes was written.
   const writeStashes = async all => {
     const empty = !Object.keys(all).length
     let ok = false
-    try { if (empty) localStorage.removeItem(STASH_KEY); else localStorage.setItem(STASH_KEY, JSON.stringify(all)); ok = true } catch { /* full */ }
+    try {
+      if (empty) {
+        localStorage.removeItem(STASH_KEY)
+        ok = localStorage.getItem(STASH_KEY) === null
+      } else {
+        const serialized = JSON.stringify(all)
+        localStorage.setItem(STASH_KEY, serialized)
+        ok = localStorage.getItem(STASH_KEY) === serialized
+      }
+    } catch { /* full */ }
     if (MOBILE) {
       await writeJsonFile(STASH_FILE, all)
       const back = await readJsonFile(STASH_FILE)
-      ok = ok || (!!back && Object.keys(back).length === Object.keys(all).length)
+      // A failed write can leave an old file with exactly the same keys. Only
+      // the intended contents, not the number of accounts, prove a durable copy.
+      ok = ok || (!!back && sameStash(back, all))
     }
     set({ keptRev: get().keptRev + 1 })
     return ok || empty
@@ -1231,7 +1255,7 @@ export const useStore = create((set, get) => {
     // Kept while a sign-in's question was open: a copy that was never this account's, added back
     // like an answered "Add them" (applyStash), the account's settings and history first.
     const adopt = adoptHold || !!all[key]?.adopt
-    all[key] = { server: server || null, uid: user.id, name: user.name || '', at: Date.now(), state, ...(adopt ? { adopt: true } : {}) }
+    all[key] = { server: server || null, uid: user.id, name: user.name || '', at: stashAt(all[key]), state, ...(adopt ? { adopt: true } : {}) }
     return writeStashes(all)
   }
   // A workout running here is never on the server (a push leaves `active` out), so a sign-out
@@ -1248,7 +1272,7 @@ export const useStore = create((set, get) => {
     const prev = all[key]?.state
     const state = prev ? clone(prev) : Object.assign(clone(DEF), { _ts: 0, unit: get().S.unit || 'kg' })
     state.active = clone(carryActive(get().S, state))
-    all[key] = { server: server || null, uid: user.id, name: user.name || '', at: Date.now(), state }
+    all[key] = { server: server || null, uid: user.id, name: user.name || '', at: stashAt(all[key]), state }
     return writeStashes(all)
   }
   // A sign-out ends the rest and the hold running on this device: the countdown must not go on
@@ -1286,11 +1310,21 @@ export const useStore = create((set, get) => {
     if (MOBILE) await nativePersist(true)   // the durable copy holds it before the stash goes
     await get().pushState()
     // Another account since: the stash stays as it is (that switch kept this copy aside again).
+    // On a phone a mirror write can fail silently too. Keep the stash until the
+    // server has acknowledged the changes, rather than relying on that write.
+    if (!isCurrent(tok) || (MOBILE && get().unsyncedChanges().owed)) return
+    // An active workout is local-only: verify a durable copy before clearing its stash.
+    if (MOBILE && merged.active) {
+      const saved = readSaved()
+      const mirror = await nativeLoad()
+      if (!isCurrent(tok)) return
+      if (!(savedIsMine() && sameStash(saved?.active, merged.active)) &&
+          !sameStash(mirror?.active, merged.active)) return
+    }
     // Read once more, so a stash written meanwhile is not written over with the older read.
-    if (!isCurrent(tok)) return
     const now = await readStashes()
     if (!isCurrent(tok)) return
-    for (const k of keys) delete now[k]
+    for (const k of keys) if (sameStash(now[k], all[k])) delete now[k]
     await writeStashes(now)
   }
 
