@@ -420,6 +420,7 @@ export const useStore = create((set, get) => {
   let pairedBase = null    // mobile build: the address of the paired server, while there is one
   let fpOf = null          // the copy the stored fingerprint was last taken of (confirmed)
   let keeping = null       // phone: the file write of what keepForPrevious set aside, until it lands
+  let pairingTransition = false // do not resume adoption while pairing credentials are changing
   let mirrorQ = Promise.resolve()   // phone: the file mirror's writes, one after the other (saveMirror)
   // The write of the saved copy this tab last read or made, and whose copy it was (joinSaved).
   let seenWid = (() => { try { return localStorage.getItem(WID_KEY) } catch { return null } })()
@@ -786,7 +787,7 @@ export const useStore = create((set, get) => {
   // server is pushed on the same occasion. A phone that sat in a pocket all afternoon and a
   // desktop tab left open all week used to show, and then push, whatever they last had.
   const checkRev = async (force = false) => {
-    if (sandbox) return
+    if (sandbox || pairingTransition) return
     if (!get().user || !get().ready || document.visibilityState === 'hidden') return
     if (!force && Date.now() - lastCheck < CHECK_MIN_MS) return
     lastCheck = Date.now()
@@ -1295,7 +1296,11 @@ export const useStore = create((set, get) => {
       if (!await writeStashes(all)) throw new Error('Unable to preserve this account on the device')
     }
     if (!isCurrent(tok) || readOwner() !== owner || !sameStash(get().S, S)) throw new Error('Account or data changed during pairing; retry')
-    get().setUser(user, { adopt: true, preparedSwitch: true })
+    // A restored/moved server can retain the same account ID. Keep upstream's
+    // same-account adoption contract, while saving a fallback under the old address.
+    // Invalidate in-flight responses even when setUser sees an unchanged user ID.
+    get().setUser(user, { adopt: true, preparedSwitch: owner !== user.id, pairingPrepared: true })
+    newSession()
   }
   // What a sign-out or disconnect answers when something is owed: how many changes, and how many
   // photos or videos, when there are any.
@@ -1875,7 +1880,7 @@ export const useStore = create((set, get) => {
 
     // `adopt` (a sign-in, a pairing — { alwaysAsk } for a device link): adoptProfile follows and
     // decides what becomes of this copy; until it has, nothing is pulled or pushed (ADOPT_KEY).
-    setUser(u, { adopt, preparedSwitch = false } = {}) {
+    setUser(u, { adopt, preparedSwitch = false, pairingPrepared = false } = {}) {
       const was = get().user?.id ?? null
       const wasHeld = adoptHold   // the hold of the account signed in so far, before this one's goes on
       if (u) {
@@ -1942,7 +1947,7 @@ export const useStore = create((set, get) => {
         // Coach entry point would stay hidden until the next reload. Ask again, unawaited:
         // nothing on this path waits for the answer. A copy that has the key was made for a
         // session and is already the right answer, Coach or no Coach.
-        if (!preparedSwitch && get().config && !('coach' in get().config)) get().refreshConfig()
+        if (!preparedSwitch && !pairingPrepared && get().config && !('coach' in get().config)) get().refreshConfig()
       } else { rejoined = false; adoptHold = false; localStorage.removeItem('gym_user') }
       set({ user: u })
       // Another account, or none: what is in flight was for the previous one (GHSA-656w-p99j-x8hf).
@@ -2119,6 +2124,7 @@ export const useStore = create((set, get) => {
     // The adoption a sign-in still owes — the app was closed with its question open, or the server
     // could not be reached for it: asked again, with the sign-in's own question.
     async resumeAdoption(ask) {
+      if (pairingTransition) return null
       const m = adoptOwed()
       if (!m) { if (adoptHold && !adopting) releaseAdopt(); return null }
       if (adopting) return adopting
@@ -2168,23 +2174,31 @@ export const useStore = create((set, get) => {
     // switches this device over to that account, same as signing in on the web does — the same
     // account pairing again merges what the phone kept (adoptProfile).
     async connectToServer(url, code, ask) {
-      let prepared = false
-      const user = await connect(url, code, async (u, base) => {
-        const owner = readOwner()
-        prepared = !!owner && (owner !== u.id || (!!serverBase() && serverBase() !== base))
-        if (prepared) await prepareMobileSwitch(u, base)
-      })
+      if (pairingTransition) throw new Error('Pairing already in progress')
+      let prepared = false, user
+      pairingTransition = true
+      try {
+        user = await connect(url, code, async (u, base) => {
+          const owner = readOwner()
+          prepared = !!owner && (owner !== u.id || (!!serverBase() && serverBase() !== base))
+          if (prepared) await prepareMobileSwitch(u, base)
+        })
+      } finally { pairingTransition = false }
       await get().afterConnect(user, url, ask, prepared)
     },
     // Signed in with the server's identity provider from the phone (lib/oidc-app.js): from there on
     // exactly what a pairing does.
     async connectWithProvider(url, label, ask) {
-      let prepared = false
-      const user = await connectWithProvider(url, label, undefined, async (u, base) => {
-        const owner = readOwner()
-        prepared = !!owner && (owner !== u.id || (!!serverBase() && serverBase() !== base))
-        if (prepared) await prepareMobileSwitch(u, base)
-      })
+      if (pairingTransition) throw new Error('Pairing already in progress')
+      let prepared = false, user
+      pairingTransition = true
+      try {
+        user = await connectWithProvider(url, label, undefined, async (u, base) => {
+          const owner = readOwner()
+          prepared = !!owner && (owner !== u.id || (!!serverBase() && serverBase() !== base))
+          if (prepared) await prepareMobileSwitch(u, base)
+        })
+      } finally { pairingTransition = false }
       await get().afterConnect(user, url, ask, prepared)
     },
     async afterConnect(user, url, ask, prepared = false) {
