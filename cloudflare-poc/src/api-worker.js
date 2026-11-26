@@ -10,7 +10,8 @@ import { excusedOn,nudgeFor } from '../../api/nudge.js';
 import { isMisconfigured } from '../../api/verify-error.js';
 import { CORE } from './auth/routes.js';
 import { Presence } from './auth/presence.js';
-import { MEDIA_CONFIG,mediaRoute,handleMedia,inventory } from './media.js';
+import { MEDIA_CONFIG,mediaRoute,handleMedia } from './media.js';
+import { MediaLifecycle } from './media-lifecycle.js';
 const result=(status,body,token)=>({status,body,token});
 const ok=(body={ok:true},token)=>result(200,body,token);
 const err=(status,error,code)=>result(status,{error,...(code?{code}:{})});
@@ -30,7 +31,7 @@ export default {async fetch(req,env){
   catch{return Response.json(req.method==='GET'&&u.pathname==='/api/health'?{ok:false,writable:false}:{error:'service unavailable'},{status:503,headers:{'Cache-Control':'no-store'}});}
 }};
 export class AuthCoordinator extends DurableObject{
-  constructor(ctx,env){super(ctx,env);this.c=config(env);this.a=new AuthRepo(ctx.storage,this.c);this.s=new StateStore(ctx.storage);this.storage=ctx.storage;this.presence=new Presence();this.media=env.P5_MEDIA==='1'?env.PRIVATE_MEDIA:null;this.mediaBusy=false;}
+  constructor(ctx,env){super(ctx,env);this.c=config(env);this.a=new AuthRepo(ctx.storage,this.c);this.s=new StateStore(ctx.storage);this.storage=ctx.storage;this.presence=new Presence();this.media=env.P5_MEDIA==='1'?env.PRIVATE_MEDIA:null;this.mediaBusy=false;this.lifecycle=this.media?new MediaLifecycle(this.a,this.s,this.media):null;}
   respond(req,r){
     const h=cors(this.c,req);h.set('Content-Type','application/json');
     if(r.token!==undefined)for(const c of cookies(this.c,r.token))h.append('Set-Cookie',c);
@@ -48,6 +49,15 @@ export class AuthCoordinator extends DurableObject{
         if(NATIVE.has(req.headers.get('origin'))&&req.headers.get('access-control-request-private-network')==='true')h.set('Access-Control-Allow-Private-Network','true');
         return new Response(null,{status:204,headers:h});
       }
+      // A previously authorized deletion can be resumed without a live session.
+      // Health is the explicit recovery trigger; no anonymous request can create an intent.
+      const pending=this.lifecycle?.pending();
+      if(pending){
+        if(key!=='GET /api/health'||this.mediaBusy)return this.respond(req,err(503,'account deletion pending','media-cleanup-pending'));
+        this.mediaBusy=true;
+        try{await this.lifecycle.finish(pending,uid=>this.removeAccount(uid));}
+        finally{this.mediaBusy=false;}
+      }
       const isMedia=!!this.media&&mediaRoute(req.method,u.pathname);
       if((!CORE.has(key)&&!isMedia)||/%|\\/.test(u.pathname))return this.respond(req,err(404,'not found'));
       const s=this.a.session(req);
@@ -60,7 +70,18 @@ export class AuthCoordinator extends DurableObject{
         if(this.mediaBusy)return this.respond(req,err(429,'media busy','busy'));
         this.mediaBusy=true;
         try{
-          const response=await handleMedia(req,s.uid,this.media,()=>this.a.live(s));
+          const live=()=>this.a.live(s);
+          let response;
+          if(key==='POST /api/media/sweep'){
+            await readBody(req,64*1024);
+            const want=req.headers.get('x-opengym-account');
+            if(want&&want!==s.uid)return this.respond(req,err(409,'signed in as another account now','account-mismatch'));
+            const outcome=await this.lifecycle.sweep(s.uid,live);
+            response=Response.json(outcome.body,{status:outcome.status});
+          }else{
+            response=await handleMedia(req,s.uid,this.media,live);
+            if(req.method==='PUT'&&response.ok)this.a.tx(()=>this.lifecycle.touch(s.uid,u.pathname.split('/').at(-1)));
+          }
           const h=new Headers(response.headers);
           for(const [k,v] of cors(this.c,req))if(!h.has(k)||k==='vary'||k==='access-control-allow-origin')h.set(k,v);
           h.set('X-POC-Wall-Ms',String(performance.now()-start));
@@ -79,13 +100,20 @@ export class AuthCoordinator extends DurableObject{
         try{
           const current=this.a.live(s);
           if(!current)return this.respond(req,denied());
-          // No orphaned personal media: defer deletion until cross-store recovery exists.
-          if((await inventory(this.media,current.id)).usage.count)return this.respond(req,err(503,'account media cleanup not yet available','media-cleanup-unavailable'));
           r=await this.route(req,u,key,s,b);
+          if(r.status===200&&this.lifecycle.pending()===current.id){
+            await this.lifecycle.finish(current.id,uid=>this.removeAccount(uid));
+            r=ok({ok:true},null);
+          }
         }finally{this.mediaBusy=false;}
       }else r=await this.route(req,u,key,s,b);
     }catch(e){r=e instanceof HttpInputError?err(e.status,e.message):err(503,'service unavailable');}
     const res=this.respond(req,r);res.headers.set('X-POC-Wall-Ms',String(performance.now()-start));return res;
+  }
+  removeAccount(uid){
+    const a=this.a;
+    for(const table of ['profile_chunks','profile_state','corrupt_profiles'])a.q('DELETE FROM '+table+' WHERE profile_id=?',uid);
+    a.q('DELETE FROM auth_creds WHERE uid=?',uid);a.q('DELETE FROM auth_codes WHERE uid=?',uid);a.q('DELETE FROM auth_challenges');a.q('DELETE FROM auth_users WHERE id=?',uid);a.audit('account-delete');this.presence.clear(uid);
   }
   async registration(u,kind,extra={}){
     const opts=await generateRegistrationOptions({rpName:'openGym',rpID:this.c.rp,userID:Buffer.from(u.id),userName:u.name,userDisplayName:u.name,attestationType:'none',authenticatorSelection:{residentKey:'required',userVerification:'required'},excludeCredentials:this.a.creds(u.id).map(c=>({id:c.id,transports:JSON.parse(c.transports)}))});
@@ -200,8 +228,9 @@ export class AuthCoordinator extends DurableObject{
       return key.endsWith('/rev')?revisionResponse(await this.s.revision(s.uid)):stateResponse(await this.s.read(s.uid));
     }
     if(key==='PUT /api/data'){
+      if(this.mediaBusy)return err(409,'media busy','busy');
       try{return a.tx(()=>{if(!live())return denied();const invalid=validate(b);if(invalid)return invalid;
-        const next=transition(this.s.current(s.uid),b);if(next.next)this.s.save(s.uid,next.next);return {status:next.status,body:next.body};
+        const next=transition(this.s.current(s.uid),b);if(next.next){this.s.save(s.uid,next.next);this.lifecycle?.noteState(s.uid,next.next);}return {status:next.status,body:next.body};
       });}catch(e){return this.s.error(s.uid,e).kind==='too_large'?err(413,'state too large after stamping'):err(503,'state unreadable');}
     }
     if(key==='POST /api/account/delete'){
@@ -209,8 +238,8 @@ export class AuthCoordinator extends DurableObject{
       const u=live();if(!u)return denied();if(!check(u))return err(400,'type the account name to confirm','confirm-name');
       const remove=u=>{
         if(!check(u))return err(400,'type the account name to confirm','confirm-name');
-        for(const table of ['profile_chunks','profile_state','corrupt_profiles'])a.q('DELETE FROM '+table+' WHERE profile_id=?',u.id);
-        a.q('DELETE FROM auth_creds WHERE uid=?',u.id);a.q('DELETE FROM auth_codes WHERE uid=?',u.id);a.q('DELETE FROM auth_challenges');a.q('DELETE FROM auth_users WHERE id=?',u.id);a.audit('account-delete');this.presence.clear(u.id);return ok({ok:true},null);
+        if(this.lifecycle){this.lifecycle.begin(u.id);return ok({ok:true});}
+        this.removeAccount(u.id);return ok({ok:true},null);
       };
       if(s.bearer&&s.kind==='b')return a.tx(()=>{const u=live();return u?remove(u):denied();});
       return this.step(s,b,remove);
