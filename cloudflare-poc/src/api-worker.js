@@ -10,7 +10,7 @@ import { excusedOn,nudgeFor } from '../../api/nudge.js';
 import { isMisconfigured } from '../../api/verify-error.js';
 import { CORE } from './auth/routes.js';
 import { Presence } from './auth/presence.js';
-import { MEDIA_CONFIG,mediaRoute,handleMedia } from './media.js';
+import { MEDIA_CONFIG,mediaRoute,handleMedia,readMediaJson } from './media.js';
 import { MediaLifecycle } from './media-lifecycle.js';
 const result=(status,body,token)=>({status,body,token});
 const ok=(body={ok:true},token)=>result(200,body,token);
@@ -66,14 +66,14 @@ export class AuthCoordinator extends DurableObject{
       if(!csrf(this.c,req,key,s))return this.respond(req,result(403,{error:'cross-origin request refused',code:'origin-mismatch',expected:this.c.origin}));
       if(isMedia){
         if(!this.a.live(s))return this.respond(req,denied());
-        if(!this.a.throttle('media',120))return this.respond(req,err(429,'too many media requests'));
         if(this.mediaBusy)return this.respond(req,err(429,'media busy','busy'));
+        if(!this.a.throttle('media',120))return this.respond(req,err(429,'too many media requests'));
         this.mediaBusy=true;
         try{
           const live=()=>this.a.live(s);
           let response;
           if(key==='POST /api/media/sweep'){
-            await readBody(req,64*1024);
+            await readMediaJson(req,64*1024);
             const want=req.headers.get('x-opengym-account');
             if(want&&want!==s.uid)return this.respond(req,err(409,'signed in as another account now','account-mismatch'));
             const outcome=await this.lifecycle.sweep(s.uid,live);
