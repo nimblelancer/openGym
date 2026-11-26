@@ -50,7 +50,7 @@ function httpFetch(url,init={}){
   return new Promise((ok,fail)=>{
     const u=new URL(String(url));if(u.protocol!=='http:'||!['127.0.0.1','localhost'].includes(u.hostname)){fail(Error('nonlocal request refused'));return}
     const headers=new Headers(init.headers||{});if(!headers.has('origin'))headers.set('origin','capacitor://localhost')
-    const req=request(u.href,{method:init.method||'GET',headers:Object.fromEntries(headers)},r=>{
+    const req=request(u.href,{family:4,method:init.method||'GET',headers:Object.fromEntries(headers)},r=>{
       const parts=[];r.on('data',c=>parts.push(c));r.on('error',fail);r.on('end',()=>{
         const body=Buffer.concat(parts).toString('utf8')
         ok({ok:r.statusCode>=200&&r.statusCode<300,status:r.statusCode,headers:{get:k=>r.headers[k.toLowerCase()]??null,getSetCookie:()=>r.headers['set-cookie']||[]},json:async()=>JSON.parse(body),text:async()=>body})

@@ -60,3 +60,25 @@ The owner requested to defer manual physical passkey testing and continue the re
 
 ## Phase 4 initial engineering checkpoint
 Created PHASE_04.md with P4-A..F and P4-01..16, and added a dedicated mobile-contract CI job exercising pinned upstream api/remote/mobile/merge/nudge modules against real local HTTP Worker, with disposable synthetic OS file mock and transport adapter. Tests cover pairing, replay, origin preflight, offline conflict/merge, file mirror, renewal/revocation/re-pair, HTML failure and nudge response. Native OS and WebView not executed, full client-store integration pending. No PASS claims until CI. Existing frontend source and test suite unchanged; CI copies the new fixture into the disposable checkout and removes it afterward. Existing five jobs retained. No Phase 5 implementation, remote resources or deploy.
+
+## Phase 4 checkpoint — authored coverage, CI evidence unavailable (2026-11-26)
+Baseline: Phase 3 45657223798 SUCCESS, all five jobs. GitHub branch listing and exact head queries returned no Actions run associated with 49157bdb, 518468ec or 74f3d223 at inspection; latest visible run remains the Phase 3 run. The new workflow has a branch-scoped push trigger with cloudflare-poc and workflow path filters and workflow_dispatch; current connector does not expose a workflow-dispatch write action. Do not rerun an old SHA as proof of new code. The owner can select the feature branch in the GitHub Actions UI and run the existing workflow if automatic push execution remains absent. No test execution, latest profile or new asset artifact is asserted. No application hotfix justified without execution evidence.
+| ID | Authored scope / evidence | Status |
+|---|---|---|
+| P4-01 | pinned source route/status/caller and deferred capability matrix; actual installed release version unknown | DOCUMENTED / device pending |
+| P4-02 | actual client connect/pairRedeem, invalid/replay; real Worker | CI REQUIRED |
+| P4-03 | native preflight for three origins, bearer/no cookie, no relative fallback | CI REQUIRED |
+| P4-04 | pairing file persistence, renewal/revocation and re-pair | CI REQUIRED |
+| P4-05 | actual useStore boot/connect/adoption/push/pull, rev/wid | CI REQUIRED |
+| P4-06 | offline phone edit, separate server-side edit, actual store 409 merge/retry | CI REQUIRED |
+| P4-07 | offline pending edit, native mirror/cold boot, failed acknowledgements and reconnect | CI REQUIRED |
+| P4-08 | deletion/reset, offline valid SQLite rewind and restart, store pull preserves edits | CI REQUIRED |
+| P4-09 | refuse disconnect, both stash targets failing, forced stash, isolated second server, native-file stash re-pair | CI REQUIRED |
+| P4-10 | actual 413, simulated transport HTML/503/offline/timeout, no false acknowledgement | CI REQUIRED |
+| P4-11 | real nudge API plus native cancellation logic; existing upstream native-local health/reminder tests; actual permissions/OS execution manual | CI + MANUAL REQUIRED |
+| P4-12 | upstream nativeFetch with simulated CapacitorHttp bridge real HTTP, Access fake header origin binding; actual WebView/TLS/OS networking not tested | CI + MANUAL REQUIRED |
+| P4-13 | unsupported core optional route checks and config capability review; exhaustive mandatory UI/deferred module review outstanding, media Phase 5 | PARTIAL |
+| P4-14 | new mobile-contract job with serial pinned module/store tests and GNU time artifact; all six jobs/asset and lockfile verification pending | BLOCKED: no visible run |
+| P4-15 | official installed mobile app checklist M4-01..10; no rebuild or actual device test | DEFERRED, NOT WAIVED |
+| P4-16 | feature branch scope, no main/deploy/remote resources; owner acceptance remains open, P3-04/P3-21 deferred | OPEN |
+Work packages P4-A documented, B/C/D authored test implementation (not yet validated; P4-13 and OS-specific evidence incomplete), E CI configured + manual plan, F checkpoint only. Phase 4 remains OPEN, not ready to enter Phase 5 under the agreed local validation gate. Physical owner acceptance deferred to consolidated session before Phase 7 closure, but automated run availability is a separate blocker. No Cloudflare resources or Learning Hub changes.

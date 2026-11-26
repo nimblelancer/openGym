@@ -319,3 +319,25 @@ Created PHASE_04.md with P4-A..F and P4-01..16, and added a dedicated mobile-con
 Reviewed 49157bdb and pinned sources. GitHub branch and exact-head run query returned no run for 49157bdb at inspection; latest visible completed CI remains Phase 3 45657223798, not Phase 4 evidence. Added actual upstream store integration fixture using real local Worker, simulated native filesystem and network errors, conflict/dirty tracking, revoked pairing, disconnect guard and stash, separate sequential owner databases, same-account re-pair and deletion/reset/restart. Expanded module fixture with all native origins, real oversized request and mocked CapacitorHttp bridge invoking actual upstream nativeFetch. Added mobile contract/manual checklist document and included both tests serially in mobile-contract CI. These tests are unexecuted; no Phase 4 acceptance claims. Rewind, file write failure integration, timeout, Access isolation, capability UI, actual native health and installed app remain open. No source changes to upstream frontend/backend, no remote resources, no deploy or phase closure.
 
 - Follow-up: added disposable offline SQLite rewind of valid profile rows (integrity hash recomputed, auth untouched), actual store pull recovery, both stash writes failing (must refuse forced disconnect), native-file-only cold boot, origin-scoped synthetic Access headers, disabled-route JSON checks. These are newly authored tests, not executed evidence. Actual installed-app and OS health behavior remain manual. Hosted Access not configured. No production runtime change.
+
+## Phase 4 checkpoint — authored coverage, CI evidence unavailable (2026-11-26)
+Baseline: Phase 3 45657223798 SUCCESS, all five jobs. GitHub branch listing and exact head queries returned no Actions run associated with 49157bdb, 518468ec or 74f3d223 at inspection; latest visible run remains the Phase 3 run. The new workflow has a branch-scoped push trigger with cloudflare-poc and workflow path filters and workflow_dispatch; current connector does not expose a workflow-dispatch write action. Do not rerun an old SHA as proof of new code. The owner can select the feature branch in the GitHub Actions UI and run the existing workflow if automatic push execution remains absent. No test execution, latest profile or new asset artifact is asserted. No application hotfix justified without execution evidence.
+| ID | Authored scope / evidence | Status |
+|---|---|---|
+| P4-01 | pinned source route/status/caller and deferred capability matrix; actual installed release version unknown | DOCUMENTED / device pending |
+| P4-02 | actual client connect/pairRedeem, invalid/replay; real Worker | CI REQUIRED |
+| P4-03 | native preflight for three origins, bearer/no cookie, no relative fallback | CI REQUIRED |
+| P4-04 | pairing file persistence, renewal/revocation and re-pair | CI REQUIRED |
+| P4-05 | actual useStore boot/connect/adoption/push/pull, rev/wid | CI REQUIRED |
+| P4-06 | offline phone edit, separate server-side edit, actual store 409 merge/retry | CI REQUIRED |
+| P4-07 | offline pending edit, native mirror/cold boot, failed acknowledgements and reconnect | CI REQUIRED |
+| P4-08 | deletion/reset, offline valid SQLite rewind and restart, store pull preserves edits | CI REQUIRED |
+| P4-09 | refuse disconnect, both stash targets failing, forced stash, isolated second server, native-file stash re-pair | CI REQUIRED |
+| P4-10 | actual 413, simulated transport HTML/503/offline/timeout, no false acknowledgement | CI REQUIRED |
+| P4-11 | real nudge API plus native cancellation logic; existing upstream native-local health/reminder tests; actual permissions/OS execution manual | CI + MANUAL REQUIRED |
+| P4-12 | upstream nativeFetch with simulated CapacitorHttp bridge real HTTP, Access fake header origin binding; actual WebView/TLS/OS networking not tested | CI + MANUAL REQUIRED |
+| P4-13 | unsupported core optional route checks and config capability review; exhaustive mandatory UI/deferred module review outstanding, media Phase 5 | PARTIAL |
+| P4-14 | new mobile-contract job with serial pinned module/store tests and GNU time artifact; all six jobs/asset and lockfile verification pending | BLOCKED: no visible run |
+| P4-15 | official installed mobile app checklist M4-01..10; no rebuild or actual device test | DEFERRED, NOT WAIVED |
+| P4-16 | feature branch scope, no main/deploy/remote resources; owner acceptance remains open, P3-04/P3-21 deferred | OPEN |
+Work packages P4-A documented, B/C/D authored test implementation (not yet validated; P4-13 and OS-specific evidence incomplete), E CI configured + manual plan, F checkpoint only. Phase 4 remains OPEN, not ready to enter Phase 5 under the agreed local validation gate. Physical owner acceptance deferred to consolidated session before Phase 7 closure, but automated run availability is a separate blocker. No Cloudflare resources or Learning Hub changes.

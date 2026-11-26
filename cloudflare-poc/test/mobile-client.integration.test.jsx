@@ -42,7 +42,7 @@ function httpFetch(url,init={}){
   return new Promise((ok,fail)=>{
     const u=new URL(String(url));if(u.protocol!=='http:'||!['127.0.0.1','localhost'].includes(u.hostname)){fail(Error('nonlocal request refused'));return}
     const headers=new Headers(init.headers||{});if(!headers.has('origin'))headers.set('origin','capacitor://localhost')
-    const req=request(u.href,{method:init.method||'GET',headers:Object.fromEntries(headers)},r=>{
+    const req=request(u.href,{family:4,method:init.method||'GET',headers:Object.fromEntries(headers)},r=>{
       const parts=[];r.on('data',c=>parts.push(c));r.on('error',fail);r.on('end',()=>{
         const body=Buffer.concat(parts).toString('utf8')
         ok({ok:r.statusCode>=200&&r.statusCode<300,status:r.statusCode,headers:{get:k=>r.headers[k.toLowerCase()]??null,getSetCookie:()=>r.headers['set-cookie']||[]},json:async()=>JSON.parse(body),text:async()=>body})
@@ -92,8 +92,7 @@ it('actual mobile API/remote/merge modules: pair, persist, offline conflict, ren
     expect(observed.at(-1)).toMatchObject({origin:runner.base,access:true,bearer:true,cookie:false})
     // Different authority (localhost instead of 127.0.0.1) must not receive the Access headers.
     setRemoteAuth(runner.origin,remote.token)
-    // Adapter permits loopback authority only; Node may choose IPv6 for localhost.
-    await api('/api/me').catch(()=>{})
+    await api('/api/me')
     expect(observed.at(-1)).toMatchObject({origin:runner.origin,access:false,bearer:true,cookie:false})
     setRemoteAuth(runner.base,remote.token);await clearCfAccess()
     const first={unit:'kg',workouts:[work('seed','2026-09-01')],routines:[],_ts:Date.now()}
@@ -134,6 +133,19 @@ it('actual mobile API/remote/merge modules: pair, persist, offline conflict, ren
     forceNative=false;expect(nativeCalls).toBe(1)
     expect((await api('/api/data')).state.workouts.length).toBe(3);expect(nativeCalls).toBe(2)
     _viaNativeForTests.clear();h.native=null
+    // Client timeout without waiting 60 real seconds. No HTTP write is sent for this fault.
+    const workingFetch=globalThis.fetch
+    vi.useFakeTimers({toFake:['setTimeout','clearTimeout']})
+    try{
+      let signal
+      vi.stubGlobal('fetch',(_url,init)=>{signal=init.signal;return new Promise(()=>{})})
+      const stalled=put({workouts:[]},0)
+      const checked=expect(stalled).rejects.toMatchObject({code:'timeout'})
+      await vi.advanceTimersByTimeAsync(60001)
+      await checked
+      expect(signal.aborted).toBe(true)
+    }finally{vi.useRealTimers();vi.stubGlobal('fetch',workingFetch)}
+    expect((await api('/api/data')).state.workouts.length).toBe(3)
     const aged=issue(cfg,{id:user.id,sv:0},'b',Date.now()-TTL*.75)
     setRemoteAuth(remote.base,aged)
     const me=await api('/api/me');expect(typeof me.token==='string'&&me.token!==aged).toBe(true)
