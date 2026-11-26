@@ -2,7 +2,7 @@
 import { createHash } from 'node:crypto';
 import { sniffKind,imageDims,inspectGif,inspectMp4,inspectWebm } from '../../frontend/src/lib/media-sniff.js';
 import { MEDIA_MIMES,HASH_RE } from '../../frontend/src/lib/media-refs.js';
-import { readBody } from './storage/codec.js';
+import { readBody,HttpInputError } from './storage/codec.js';
 const MB=1024*1024;
 export const MEDIA_CONFIG={imageMB:2,gifMB:8,videoMB:8,videoSec:60,audioMB:2,quotaMB:200,workouts:true,days:true,sets:true,sounds:false,avatar:true,builtin:true};
 const LIMIT=8*MB, QUOTA=200*MB, COUNT=500;
@@ -24,8 +24,8 @@ export async function boundedBytes(req,max){
   if(declared!==null&&(!/^\d+$/.test(declared)||Number(declared)>max))return null;
   if(!req.body)return new Uint8Array();
   const reader=req.body.getReader(),chunks=[];let n=0;
-  try{while(true){const {done,value}=await reader.read();if(done)break;n+=value.byteLength;if(n>max){await reader.cancel();return null;}chunks.push(value);}
-  }finally{reader.releaseLock();}
+  try{while(true){let timer;const {done,value}=await Promise.race([reader.read(),new Promise((_,reject)=>{timer=setTimeout(()=>reject(new HttpInputError(408,'upload stalled')),15000);})]).finally(()=>clearTimeout(timer));if(done)break;n+=value.byteLength;if(n>max){await reader.cancel();return null;}chunks.push(value);}
+  }catch(e){await reader.cancel().catch(()=>{});throw e;}finally{reader.releaseLock();}
   if(declared!==null&&Number(declared)!==n)throw Error('incomplete body');
   return Buffer.concat(chunks,n);
 }
@@ -48,11 +48,12 @@ export function parseRange(raw,size){
   if(!raw)return null;
   const m=/^bytes=(\d*)-(\d*)$/.exec(raw);
   if(!m||!m[1]&&!m[2]||!size)return false;
+  if((m[1]&&!Number.isSafeInteger(Number(m[1])))||(m[2]&&!Number.isSafeInteger(Number(m[2]))))return false;
   const a=m[1]?Number(m[1]):Math.max(0,size-Number(m[2]));
   const b=m[1]?(m[2]?Math.min(size-1,Number(m[2])):size-1):size-1;
   return Number.isSafeInteger(a)&&Number.isSafeInteger(b)&&a>=0&&a<=b&&a<size?{offset:a,length:b-a+1}:false;
 }
-function validObject(o,h){return !!o&&o.size>0&&o.size<=LIMIT&&o.customMetadata?.sha256===h&&!!cap(MEDIA_MIMES[o.httpMetadata?.contentType]?.kind);}
+function validObject(o,h){return !!o&&o.size>0&&o.size<=cap(MEDIA_MIMES[o.httpMetadata?.contentType]?.kind)&&o.customMetadata?.sha256===h;}
 export async function handleMedia(req,uid,bucket,live){
   const p=new URL(req.url).pathname,hash=p.split('/').at(-1),want=req.headers.get('x-opengym-account');
   if(!live())return denied();
@@ -84,7 +85,7 @@ export async function handleMedia(req,uid,bucket,live){
     const i=await inventory(bucket,uid);
     if(i.usage.bytes+bytes.length>QUOTA||i.usage.count>=COUNT)return error(413,'media-quota','your space for photos and videos is full');
     if(!live())return denied();
-    await bucket.put(key,bytes,{httpMetadata:{contentType:checked.mime},customMetadata:{sha256:hash}});
+    await bucket.put(key,bytes,{sha256:hash,httpMetadata:{contentType:checked.mime},customMetadata:{sha256:hash}});
     const back=await bucket.head(key);
     if(!validObject(back,hash)||back.size!==bytes.length)return error(503,'media-unreadable','upload not verified');
     if(!live())return denied();
