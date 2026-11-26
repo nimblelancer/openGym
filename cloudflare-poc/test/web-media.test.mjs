@@ -109,8 +109,18 @@ test('actual local Worker: SPA, private R2, authenticated media contract and res
     const mobileGet=await raw(path,'GET',undefined,mobile);assert.equal(mobileGet.status,200);assert.equal(mobileGet.headers.get('access-control-allow-origin'),'capacitor://localhost');assert.deepEqual(Buffer.from(await mobileGet.arrayBuffer()),image);
     const preflight=await raw(path,'OPTIONS',undefined,{origin:'capacitor://localhost','access-control-request-method':'GET','access-control-request-headers':'authorization,range'});assert.equal(preflight.status,204);assert.match(preflight.headers.get('access-control-allow-headers'),/Range/i);
     assert.equal((await post('/api/media/sweep',{},auth())).status,503);
-    const del=await post('/api/account/delete',{name:'Synthetic Owner'},mobile);assert.equal(del.status,503);
+    // A committed state is required even for a conservative sweep.
+    const state={workouts:[],routines:[],customEx:[{id:'synthetic',media:{hash,kind:'image',mime:'image/png',size:image.length,width:1,height:1}}]};
+    await data(await raw('/api/data','PUT',JSON.stringify({state,baseRev:0,stamped:true}),{'content-type':'application/json',...auth()}));
+    assert.equal((await data(await post('/api/media/sweep',{},auth()))).removed,0);
+    const current=await data(await raw('/api/data','GET',undefined,auth()));
+    await data(await raw('/api/data','PUT',JSON.stringify({state:{workouts:[],routines:[],customEx:[],resetAt:Date.now()},baseRev:current.rev,baseWid:current.state._wid,stamped:true}),{'content-type':'application/json',...auth()}));
+    const afterReset=await data(await post('/api/media/sweep',{},auth()));
+    // Deliberately retain recently unreferenced objects for offline clients; never pretend they were deleted.
+    assert.equal(afterReset.removed,0);assert.equal(afterReset.usage.count,1);
     assert.equal((await raw('/api/me','GET',undefined,mobile)).status,200);
+    assert.equal((await post('/api/account/delete',{name:'wrong name'},mobile)).status,400);
+    assert.equal((await raw(path,'HEAD',undefined,mobile)).status,200);
     console.log('PHASE5_PRIVATE_MEDIA_AUTH_RANGE PASS');
     await runner.stop();await runner.start();
     const back=await raw(path,'GET',undefined,auth());assert.equal(back.status,200);assert.deepEqual(Buffer.from(await back.arrayBuffer()),image);
@@ -119,5 +129,19 @@ test('actual local Worker: SPA, private R2, authenticated media contract and res
     assert.equal((await raw(path,'GET',undefined,mobile)).status,401);
     assert.equal((await raw(path,'GET',undefined,auth())).status,401);
     console.log('PHASE5_MEDIA_RESTART_REVOCATION PASS');
+    // Re-authenticate after revoke, then authorize deletion via a fresh paired token.
+    const login=await data(await post('/api/login/options'));
+    const verified=await post('/api/login/verify',{cid:login.cid,credential:dev.login(login.options.challenge,++count)});
+    await data(verified);cookie=verified.headers.getSetCookie()[0].split(';')[0];
+    const pairOpts=await data(await post('/api/login/options'));
+    const nextPair=await data(await post('/api/pair/create',{cid:pairOpts.cid,credential:dev.login(pairOpts.options.challenge,++count)},auth()));
+    const nextToken=(await data(await post('/api/pair/redeem',{code:nextPair.code}))).token;
+    const deleting={authorization:'Bearer '+nextToken,origin:'capacitor://localhost'};
+    assert.equal((await data(await post('/api/account/delete',{name:'Synthetic Owner'},deleting))).ok,true);
+    assert.equal((await raw(path,'GET',undefined,deleting)).status,401);
+    assert.equal((await data(await raw('/api/health'))).users,0);
+    await runner.stop();await runner.start();
+    assert.equal((await data(await raw('/api/health'))).users,0);
+    console.log('PHASE5_RESET_GRACE_ACCOUNT_DELETE PASS');
   }finally{await runner.cleanup();}
 });
