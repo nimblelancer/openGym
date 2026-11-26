@@ -1,0 +1,49 @@
+{
+  "name": "opengym-phase5-local-web-media",
+  "main": "src/web-worker.js",
+  "compatibility_date": "2026-10-01",
+  "compatibility_flags": [
+    "nodejs_compat"
+  ],
+  "workers_dev": false,
+  "preview_urls": false,
+  "dev": {
+    "ip": "127.0.0.1",
+    "port": 8787
+  },
+  "vars": {
+    "API_ORIGIN": "http://localhost",
+    "RP_ID": "localhost",
+    "P5_MEDIA": "1"
+  },
+  "durable_objects": {
+    "bindings": [
+      {
+        "name": "AUTH",
+        "class_name": "AuthCoordinator"
+      }
+    ]
+  },
+  "migrations": [
+    {
+      "tag": "v1",
+      "new_sqlite_classes": [
+        "AuthCoordinator"
+      ]
+    }
+  ],
+  "assets": {
+    "directory": "../frontend/dist",
+    "binding": "ASSETS",
+    "run_worker_first": true,
+    "html_handling": "none",
+    "not_found_handling": "none"
+  },
+  "r2_buckets": [
+    {
+      "binding": "PRIVATE_MEDIA",
+      "bucket_name": "opengym-phase5-local-only",
+      "remote": false
+    }
+  ]
+}
