@@ -29,7 +29,10 @@ vi.mock('@capacitor/filesystem', () => ({
       return { data: h.files.get(k) }
     },
     writeFile: async ({ path, directory, data }) => {
-      if (h.refuse.has(path)) throw new Error('No space left on device')
+      if (h.refuse.has(path)) {
+        if(path==='opengym-stash.json')h.rejectedNativeStashWrites=(h.rejectedNativeStashWrites||0)+1
+        throw new Error('No space left on device')
+      }
       h.files.set(directory + '/' + path, data)
       return { uri: 'file://' + path }
     },
@@ -195,15 +198,37 @@ it('actual upstream store: offline conflict, failed acknowledgements, revoke, st
   expect((await store.getState().disconnectServer()).owed).toBe(true)
   expect(ids(store.getState().S)).toContain('owed')
   // If both stash targets fail, forced disconnect must refuse, not erase the only copy.
+  expect(localStorage.getItem('gym_stash')).toBeNull()
+  expect(readFile('opengym-stash.json')).toBeNull()
   h.refuse.add('opengym-stash.json')
-  const proto=Object.getPrototypeOf(localStorage),set=proto.setItem
-  const deny=vi.spyOn(proto,'setItem').mockImplementation(function(k,v){if(k==='gym_stash')throw Error('fixture storage full');return set.call(this,k,v)})
+  const realStorage=localStorage
+  let rejectedStashWrites=0
+  // Happy DOM Storage is a proxy: a prototype spy need not intercept actual writes.
+  // Stub the global used by useStore and prove both faults were actually exercised.
+  vi.stubGlobal('localStorage',{
+    get length(){return realStorage.length},
+    key:i=>realStorage.key(i),
+    getItem:k=>realStorage.getItem(k),
+    removeItem:k=>realStorage.removeItem(k),
+    clear:()=>realStorage.clear(),
+    setItem(k,v){
+      if(k==='gym_stash'){rejectedStashWrites++;throw Error('fixture storage full')}
+      realStorage.setItem(k,v)
+    }
+  })
   try{
+    expect(()=>localStorage.setItem('gym_stash','{}')).toThrow('fixture storage full')
+    rejectedStashWrites=0
+    h.rejectedNativeStashWrites=0
     const noStash=await store.getState().disconnectServer({force:true})
+    expect(rejectedStashWrites).toBeGreaterThan(0)
+    expect(h.rejectedNativeStashWrites).toBeGreaterThan(0)
+    expect(realStorage.getItem('gym_stash')).toBeNull()
+    expect(readFile('opengym-stash.json')).toBeNull()
     expect(noStash.stashed).toBe(false)
     expect(ids(store.getState().S)).toContain('owed')
     expect(readFile('opengym-remote.json').mode).toBe('remote')
-  }finally{deny.mockRestore();h.refuse.delete('opengym-stash.json')}
+  }finally{vi.stubGlobal('localStorage',realStorage);h.refuse.delete('opengym-stash.json')}
   const kept=await store.getState().disconnectServer({force:true})
   expect(kept.stashed).toBe(true)
   expect(readFile('opengym-remote.json').mode).toBe('local')
