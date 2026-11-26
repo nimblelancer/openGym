@@ -10,6 +10,7 @@ import { excusedOn,nudgeFor } from '../../api/nudge.js';
 import { isMisconfigured } from '../../api/verify-error.js';
 import { CORE } from './auth/routes.js';
 import { Presence } from './auth/presence.js';
+import { MEDIA_CONFIG,mediaRoute,handleMedia,inventory } from './media.js';
 const result=(status,body,token)=>({status,body,token});
 const ok=(body={ok:true},token)=>result(200,body,token);
 const err=(status,error,code)=>result(status,{error,...(code?{code}:{})});
@@ -29,7 +30,7 @@ export default {async fetch(req,env){
   catch{return Response.json(req.method==='GET'&&u.pathname==='/api/health'?{ok:false,writable:false}:{error:'service unavailable'},{status:503,headers:{'Cache-Control':'no-store'}});}
 }};
 export class AuthCoordinator extends DurableObject{
-  constructor(ctx,env){super(ctx,env);this.c=config(env);this.a=new AuthRepo(ctx.storage,this.c);this.s=new StateStore(ctx.storage);this.storage=ctx.storage;this.presence=new Presence();}
+  constructor(ctx,env){super(ctx,env);this.c=config(env);this.a=new AuthRepo(ctx.storage,this.c);this.s=new StateStore(ctx.storage);this.storage=ctx.storage;this.presence=new Presence();this.media=env.P5_MEDIA==='1'?env.PRIVATE_MEDIA:null;this.mediaBusy=false;}
   respond(req,r){
     const h=cors(this.c,req);h.set('Content-Type','application/json');
     if(r.token!==undefined)for(const c of cookies(this.c,r.token))h.append('Set-Cookie',c);
@@ -42,23 +43,47 @@ export class AuthCoordinator extends DurableObject{
       if(req.method==='OPTIONS'&&u.pathname.startsWith('/api/')){
         const h=cors(this.c,req);if(!h.has('Access-Control-Allow-Origin'))return this.respond(req,err(403,'origin refused'));
         h.set('Access-Control-Allow-Methods','GET,POST,PUT,PATCH,DELETE,OPTIONS');
-        h.set('Access-Control-Allow-Headers','Content-Type, Authorization, CF-Access-Client-Id, CF-Access-Client-Secret, X-OpenGym-Account, If-Match');
+        h.set('Access-Control-Allow-Headers','Content-Type, Authorization, CF-Access-Client-Id, CF-Access-Client-Secret, X-OpenGym-Account, If-Match, Range');
         h.set('Access-Control-Max-Age','86400');
         if(NATIVE.has(req.headers.get('origin'))&&req.headers.get('access-control-request-private-network')==='true')h.set('Access-Control-Allow-Private-Network','true');
         return new Response(null,{status:204,headers:h});
       }
-      if(!CORE.has(key)||/%|\\/.test(u.pathname))return this.respond(req,err(404,'not found'));
+      const isMedia=!!this.media&&mediaRoute(req.method,u.pathname);
+      if((!CORE.has(key)&&!isMedia)||/%|\\/.test(u.pathname))return this.respond(req,err(404,'not found'));
       const s=this.a.session(req);
       const anonymous=new Set(['GET /api/health','GET /api/config','POST /api/register/options','POST /api/register/verify','POST /api/login/options','POST /api/login/verify','POST /api/pair/redeem','POST /api/device-link/options','POST /api/device-link/verify','POST /api/logout']);
       if(!anonymous.has(key)&&!s)return this.respond(req,denied());
       if(!csrf(this.c,req,key,s))return this.respond(req,result(403,{error:'cross-origin request refused',code:'origin-mismatch',expected:this.c.origin}));
+      if(isMedia){
+        if(!this.a.live(s))return this.respond(req,denied());
+        if(!this.a.throttle('media',120))return this.respond(req,err(429,'too many media requests'));
+        if(this.mediaBusy)return this.respond(req,err(429,'media busy','busy'));
+        this.mediaBusy=true;
+        try{
+          const response=await handleMedia(req,s.uid,this.media,()=>this.a.live(s));
+          const h=new Headers(response.headers);
+          for(const [k,v] of cors(this.c,req))if(!h.has(k)||k==='vary'||k==='access-control-allow-origin')h.set(k,v);
+          h.set('X-POC-Wall-Ms',String(performance.now()-start));
+          return new Response(response.body,{status:response.status,headers:h});
+        }finally{this.mediaBusy=false;}
+      }
       // Fixed buckets cannot be expanded by arbitrary client identifiers; global anonymous auth cap,
       // plus a separate authenticated step-up cap. No trusted remote IP in loopback harness.
       if((/\/(register|login|pair|device-link|passkeys)(\/|$)/.test(u.pathname)||key==='POST /api/account/delete')&&req.method!=='GET'){
         const bucket=s?'owner':'anonymous';if(!this.a.throttle(bucket,s?100:60))return this.respond(req,err(429,'too many attempts'));
       }
       const b=['GET','HEAD'].includes(req.method)?{}:await readBody(req,key==='PUT /api/data'?MAX_BODY:64*1024);
-      r=await this.route(req,u,key,s,b);
+      if(key==='POST /api/account/delete'&&this.media){
+        if(this.mediaBusy)return this.respond(req,err(409,'media busy','busy'));
+        this.mediaBusy=true;
+        try{
+          const current=this.a.live(s);
+          if(!current)return this.respond(req,denied());
+          // No orphaned personal media: defer deletion until cross-store recovery exists.
+          if((await inventory(this.media,current.id)).usage.count)return this.respond(req,err(503,'account media cleanup not yet available','media-cleanup-unavailable'));
+          r=await this.route(req,u,key,s,b);
+        }finally{this.mediaBusy=false;}
+      }else r=await this.route(req,u,key,s,b);
     }catch(e){r=e instanceof HttpInputError?err(e.status,e.message):err(503,'service unavailable');}
     const res=this.respond(req,r);res.headers.set('X-POC-Wall-Ms',String(performance.now()-start));return res;
   }
@@ -95,7 +120,7 @@ export class AuthCoordinator extends DurableObject{
       try{a.tx(()=>{a.q('UPDATE auth_version SET version=version WHERE id=1');throw Error('health-rollback');});}catch(e){if(e.message!=='health-rollback')return result(503,{ok:false,writable:false});}
       return ok({ok:true,users:a.count(),writable:true});
     }
-    if(key==='GET /api/config')return ok({invite_only:true,allow_guest:false,signed_in:!!live(),...(live()?{coach:null}:{})});
+    if(key==='GET /api/config')return ok({invite_only:true,allow_guest:false,signed_in:!!live(),...(live()?{coach:null,...(this.media?{media:MEDIA_CONFIG}:{})}:{})});
     if(key==='POST /api/register/options'){
       const name=text(b.name).trim().slice(0,40);if(!name)return err(400,'name required');
       if(!a.open()||!a.setup(text(b.code).trim().toLowerCase()))return invite();
