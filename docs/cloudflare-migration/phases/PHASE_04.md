@@ -61,3 +61,25 @@ Work packages P4-A documented, B/C/D authored test implementation (not yet valid
 
 ## Phase 4 capability follow-up (2026-11-26)
 Re-reviewed initial 49157bdb and feature head e652ab1b. Branch Actions listing and exact head queries for both returned no Phase 4 run; latest visible run remains 45657223798 (Phase 3). P4-13: focused source audit and additional actual upstream gate/relay assertions against real local Worker; core store fixture asserts local boot, config and no observed deferred route responses during sync and stash. See PHASE_04_MOBILE_CONTRACT.md. P4-13 remains PARTIAL / CI REQUIRED (mounted UI, native device and media deferred); P4-14 remains BLOCKED pending a new run on feature head. P4-A/F documentation advanced; B/C/D/E authored tests remain unverified. No PASS promoted, no Phase 5 started, no main merge or deploy.
+
+## Hotfix 001 review and Hotfix 002 (2026-11-26)
+CI 45844043558 on d5968eaf: five regression jobs PASS; pinned mobile module fixture PASS; store fixture failed at Worker startup (Happy DOM preflight 403). Hotfix 001 5e6233b8 installs the loopback transport before health probe. CI 45845542661 on 5e6233b8: five regression jobs PASS, pinned mobile module fixture PASS; actual store fixture advances through initial adoption, offline mirror, 409 conflict merge, rewind, 503/HTML failure, revoked token and nonforced disconnect guard, then fails at forced disconnect with both stash targets intended to fail (expected stashed:false, got true). No later assertions executed. Suspected Happy DOM Storage proxy bypass of prototype spy, not established application bug. Hotfix 002 f6a24944 replaces prototype spy with explicit global Storage wrapper and verifies both injected failures via counters and absence of stash copies. Retains the original no-data-loss assertions. No runtime/security changes.
+| ID | Evidence from 45845542661 | Status |
+|---|---|---|
+| P4-01 | pinned source audit | DOCUMENTED / device pending |
+| P4-02 | actual module pairing/replay | PASS (local module scope) |
+| P4-03 | three origins/preflight, bearer/no-cookie | PASS (local module scope; real WebView deferred) |
+| P4-04 | persistence, renewal, revocation, module re-pair | PASS (local module scope) |
+| P4-05 | store initial adoption and sync | ASSERTIONS PASSED before later failure |
+| P4-06 | actual store 409 and merged server copy | ASSERTIONS PASSED before later failure |
+| P4-07 | offline mirror, owed tracking/reconnect; cold boot not reached | PARTIAL |
+| P4-08 | rewind passed; deletion/reset/restart not reached | PARTIAL |
+| P4-09 | nonforced guard passed; dual storage failure assertion failed; account isolation/re-pair not reached | FAIL / INVESTIGATING |
+| P4-10 | module timeout/413 and store 503/HTML acknowledgement | PASS (scoped assertions) |
+| P4-11 | nudge module passed; actual native health/reminders not accepted | PARTIAL / MANUAL |
+| P4-12 | module native bridge simulation and Access origin binding | PASS (simulated transport only; manual pending) |
+| P4-13 | actual config predicates/404 relay behavior passed; final store deferred-route assertion not reached, UI not mounted | PARTIAL |
+| P4-14 | 5/6 jobs, 5 uploaded artifacts (metadata checked); mobile profile exit 1 | FAIL |
+| P4-15 | physical official app | DEFERRED, NOT WAIVED |
+| P4-16 | scope preserved; owner acceptance pending | OPEN |
+P4-A documented; P4-B local module evidence passed; P4-C/D partial and data-preservation blocker; P4-E CI available but failing; P4-F review only. Phase 4 OPEN, do not enter Phase 5 until integrated local validation passes and data-preservation gate is resolved. P3-04/P3-21 and M4 manual remain deferred to consolidated acceptance before Phase 7 closure.
