@@ -4,13 +4,13 @@ import { sniffKind,imageDims,inspectGif,inspectMp4,inspectWebm } from '../../fro
 import { MEDIA_MIMES,HASH_RE } from '../../frontend/src/lib/media-refs.js';
 import { HttpInputError } from './storage/codec.js';
 const MB=1024*1024;
-export const MEDIA_CONFIG={imageMB:2,gifMB:8,videoMB:8,videoSec:60,audioMB:2,quotaMB:200,workouts:true,days:true,sets:true,sounds:false,avatar:true,builtin:true};
+export const MEDIA_CONFIG={imageMB:2,gifMB:8,videoMB:8,videoSec:60,audioMB:2,quotaMB:200,workouts:true,days:true,sets:true,sounds:true,avatar:true,builtin:true};
 const LIMIT=8*MB, QUOTA=200*MB, COUNT=500;
 const error=(status,code,message=code,extra={})=>Response.json({error:message,code,...extra},{status});
 const json=(b,status=200)=>Response.json(b,{status});
 const missing=()=>error(404,'media-missing','no such file');
 const denied=()=>error(401,'not-signed-in','not signed in');
-const cap=k=>k==='image'?2*MB:k==='gif'||k==='video'?LIMIT:0;
+const cap=k=>k==='image'||k==='audio'?2*MB:k==='gif'||k==='video'?LIMIT:0;
 const prefix=uid=>'private/v1/'+uid+'/';
 const path=(uid,h)=>prefix(uid)+h;
 export const mediaRoute=(method,p)=>method==='POST'&&['/api/media/missing','/api/media/sweep'].includes(p)||['GET','PUT','HEAD'].includes(method)&&/^\/api\/media\/[a-f0-9]{64}$/.test(p);
@@ -53,6 +53,17 @@ export async function readMediaJson(req,max){
   if(!data||typeof data!=='object'||Array.isArray(data))throw new HttpInputError(400,'invalid json');
   return data;
 }
+// Canonical WAV emitted by pinned sound-ingest.js: no extra chunks/tags,
+ // 16-bit mono PCM at 22050 Hz, at most 30 seconds.
+function canonicalWav(bytes){
+  if(bytes.length<46)return false;
+  const b=Buffer.from(bytes.buffer,bytes.byteOffset,bytes.byteLength),n=b.length-44;
+  return b.toString('ascii',0,4)==='RIFF'&&b.readUInt32LE(4)===b.length-8&&
+    b.toString('ascii',8,16)==='WAVEfmt '&&b.readUInt32LE(16)===16&&
+    b.readUInt16LE(20)===1&&b.readUInt16LE(22)===1&&b.readUInt32LE(24)===22050&&
+    b.readUInt32LE(28)===44100&&b.readUInt16LE(32)===2&&b.readUInt16LE(34)===16&&
+    b.toString('ascii',36,40)==='data'&&b.readUInt32LE(40)===n&&n%2===0&&n<=30*44100;
+}
 export function inspect(bytes,declared){
   const sn=sniffKind(bytes.subarray(0,64)),type=MEDIA_MIMES[declared];
   if(!sn||sn.input||!type||!cap(sn.kind)||sn.category!==type.category)return {status:415,code:'media-type'};
@@ -61,6 +72,8 @@ export function inspect(bytes,declared){
     const d=imageDims(bytes);
     if(!d||d.width*d.height>52_000_000)return {status:415,code:'media-invalid'};
     if(sn.kind==='gif'&&!inspectGif(bytes))return {status:415,code:'media-invalid'};
+  }else if(sn.kind==='audio'){
+    if(!canonicalWav(bytes))return {status:415,code:'media-invalid'};
   }else{
     const info=sn.mime==='video/webm'?inspectWebm(bytes):inspectMp4(bytes);
     if(!info||!Number.isFinite(info.durationSec)||info.durationSec<=0||!info.width||!info.height)return {status:415,code:'media-invalid'};
