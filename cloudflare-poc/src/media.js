@@ -2,7 +2,7 @@
 import { createHash } from 'node:crypto';
 import { sniffKind,imageDims,inspectGif,inspectMp4,inspectWebm } from '../../frontend/src/lib/media-sniff.js';
 import { MEDIA_MIMES,HASH_RE } from '../../frontend/src/lib/media-refs.js';
-import { readBody,HttpInputError } from './storage/codec.js';
+import { HttpInputError } from './storage/codec.js';
 const MB=1024*1024;
 export const MEDIA_CONFIG={imageMB:2,gifMB:8,videoMB:8,videoSec:60,audioMB:2,quotaMB:200,workouts:true,days:true,sets:true,sounds:false,avatar:true,builtin:true};
 const LIMIT=8*MB, QUOTA=200*MB, COUNT=500;
@@ -43,6 +43,16 @@ export async function boundedBytes(req,max,{idleMs=15000,totalMs=45000}={}){
     return buf.subarray(0,n);
   }catch(e){cancel();throw e;}finally{reader.releaseLock();}
 }
+// JSON media operations hold the same admission lock; bound their time as well.
+export async function readMediaJson(req,max){
+  const bytes=await boundedBytes(req,max);
+  if(!bytes)throw new HttpInputError(413,'body too large');
+  if(!bytes.length)return {};
+  if(!/^application\/json\s*(;|$)/i.test(req.headers.get('content-type')||''))throw new HttpInputError(415,'content-type must be application/json');
+  let data;try{data=JSON.parse(new TextDecoder().decode(bytes));}catch{throw new HttpInputError(400,'invalid json');}
+  if(!data||typeof data!=='object'||Array.isArray(data))throw new HttpInputError(400,'invalid json');
+  return data;
+}
 export function inspect(bytes,declared){
   const sn=sniffKind(bytes.subarray(0,64)),type=MEDIA_MIMES[declared];
   if(!sn||sn.input||!type||!cap(sn.kind)||sn.category!==type.category)return {status:415,code:'media-type'};
@@ -74,7 +84,7 @@ export async function handleMedia(req,uid,bucket,live){
   if(want&&want!==uid)return error(409,'account-mismatch','signed in as another account now');
   if(p.endsWith('/sweep'))return error(503,'media-sweep-unavailable','safe cleanup is not yet available');
   if(p.endsWith('/missing')){
-    const {hashes}=await readBody(req,80*1024);
+    const {hashes}=await readMediaJson(req,80*1024);
     if(!Array.isArray(hashes)||hashes.length>1000||!hashes.every(h=>typeof h==='string'&&HASH_RE.test(h)))return error(400,'bad-request','hashes must be a list of at most 1000 lowercase sha256 hex strings');
     const i=await inventory(bucket,uid);
     if(!live())return denied();
@@ -97,7 +107,7 @@ export async function handleMedia(req,uid,bucket,live){
     if(!live())return denied();
     if(old)return json({ok:true,hash,mime:old.httpMetadata.contentType,size:old.size,existed:true});
     const i=await inventory(bucket,uid);
-    if(i.usage.bytes+bytes.length>QUOTA||i.usage.count>=COUNT)return error(413,'media-quota','your space for photos and videos is full');
+    if(i.usage.bytes+bytes.length>QUOTA||i.usage.count>=COUNT)return error(413,'media-quota','your space for photos and videos is full',{usedMB:Math.round(i.usage.bytes/MB*10)/10,quotaMB:QUOTA/MB});
     if(!live())return denied();
     await bucket.put(key,bytes,{sha256:hash,httpMetadata:{contentType:checked.mime},customMetadata:{sha256:hash}});
     const back=await bucket.head(key);
