@@ -228,6 +228,22 @@ it('actual upstream store: offline conflict, failed acknowledgements, revoke, st
     expect(noStash.stashed).toBe(false)
     expect(ids(store.getState().S)).toContain('owed')
     expect(readFile('opengym-remote.json').mode).toBe('remote')
+    // A previous stash may remain if cleanup failed. Equal key counts do not prove
+    // that a new write succeeded: the old copy must not authorize wiping newer edits.
+    const staleKey=home.base+'|'+home.uid
+    const stale={ [staleKey]:{server:home.base,uid:home.uid,name:'Synthetic home',at:Date.now()-1000,state:clone(common.state)} }
+    expect(ids(stale[staleKey].state)).not.toContain('owed')
+    h.files.set('DATA/opengym-stash.json',JSON.stringify(stale))
+    rejectedStashWrites=0;h.rejectedNativeStashWrites=0
+    const staleResult=await store.getState().disconnectServer({force:true})
+    expect(rejectedStashWrites).toBeGreaterThan(0)
+    expect(h.rejectedNativeStashWrites).toBeGreaterThan(0)
+    expect(realStorage.getItem('gym_stash')).toBeNull()
+    expect(readFile('opengym-stash.json')).toEqual(stale)
+    expect(staleResult.stashed,'an unchanged stale file must not count as a newly durable stash').toBe(false)
+    expect(ids(store.getState().S)).toContain('owed')
+    expect(readFile('opengym-remote.json').mode).toBe('remote')
+    h.files.delete('DATA/opengym-stash.json')
   }finally{vi.stubGlobal('localStorage',realStorage);h.refuse.delete('opengym-stash.json')}
   const kept=await store.getState().disconnectServer({force:true})
   expect(kept.stashed).toBe(true)
