@@ -267,3 +267,44 @@ Status: OPEN; physical passkey and final latest-code integrated CI remain gates.
 | P3-21 | owner physical passkey checklist, final branch/safety and acceptance | OPEN |
 
 No closure. Eighteen scoped local criteria have prior passing evidence (not final-code acceptance); P3-04, P3-20 and P3-21 are open. Final CI, manual smoke and physical verification required. Phase 4 not implemented.
+
+## Final security CI review — 2026-11-26
+**OPEN — AUTOMATED LOCAL VALIDATION PASSED; READY FOR MANUAL PHYSICAL PASSKEY ACCEPTANCE.** Do not close Phase 3 or start Phase 4.
+- Run [45657223798](https://github.com/nimblelancer/openGym/actions/runs/45657223798), attempt 1, tested ab4e37829ddb18c74267460e821644c0b5743d18, completed SUCCESS 2026-11-25 16:51:27 UTC. Five jobs and every recorded step SUCCESS.
+- POC [139357055446](https://github.com/nimblelancer/openGym/actions/runs/45657223798/job/139357055446) 4/4 (+2 repeated precheck); storage [139357055619](https://github.com/nimblelancer/openGym/actions/runs/45657223798/job/139357055619) 6/6; auth-core [139357055440](https://github.com/nimblelancer/openGym/actions/runs/45657223798/job/139357055440) 9/9, 0 failed/cancelled/skipped; upstream API [139357055565](https://github.com/nimblelancer/openGym/actions/runs/45657223798/job/139357055565) 1084/1084; frontend/assets [139357055206](https://github.com/nimblelancer/openGym/actions/runs/45657223798/job/139357055206) 10101/10101 in 898 files, Vite build 2.70s, media staging and manifest SUCCESS. Total 11204 main-suite passes excluding repeated precheck. All npm ci and syntax-check steps passed.
+- Auth log markers: PHASE3_BROWSER_VIRTUAL_PASSKEY PASS, PHASE3_MANUAL_HARNESS_VIRTUAL_SMOKE PASS, PHASE3_AUTH_CORE PASS, PHASE3_UPSTREAM_AUTH_DIFFERENTIAL PASS, PHASE3_AUTH_FAULT_ROLLBACK PASS, PHASE3_AUTH_ROTATION_SCHEMA PASS. Manual proxy/UI smoke covers registration, authenticated session/HttpOnly, synthetic state write/read, logout/login and logout/all using Chrome virtual authenticator. Does not prove physical authenticator or cancellation/manual checklist acceptance.
+- Related runs confirmed completed: 45653658471, 45653986809, 45656055740, 45656416258 all five jobs SUCCESS. 45656532011, 45656701583, 45656865169, 45657121938 failed auth only; remaining four jobs SUCCESS. Historical fixture duplicate declaration, offline SQLite lock, localhost readiness Host probe failures resolved in final run; no new application hotfix required based on observed CI evidence.
+- All four final ZIP artifacts downloaded, archive CRC checked and members independently read; SHA-256 refers to member content, not ZIP:
+  - 15044256330 auth-process-profile.txt: 1031c7141c6b8746644a9eaf33ece53ec8099f6d3c7bb98be707b121c5f546b5; user CPU 15.09s, system 3.38s, wall 48.90s, peak RSS 317580 KiB, CPU 37%, exit 0.
+  - 15042337700 storage-process-profile.txt: 8a5ea83dff5277fc32642c409411a533eb8b4dc393086f8b1cfe629020f6f348; user CPU 7.50s, system 1.21s, wall 18.73s, peak RSS 312248 KiB, CPU 46%, exit 0.
+  - 15042572548 package-lock.json: 3bf5809d991c8c036e1001c4ec7af25bcfecbf0aa9ede2e320591996f2b4fddc; 79766 bytes, v3, 156 package records, Wrangler 4.168.0, SimpleWebAuthn 13.3.3. Computed Git blob 0cde099db0392a2583158df6911b3180d20698be matches feature branch file. Same checksum as Phase 2.
+  - 15042304302 assets.json: f7924cac4ae9a010184994febf7360d5e4f3dda98cba7bf57a75d064ef86b4f2; 13345 files, 242978231 bytes, 13109 media entries, largest 2091275 bytes, oversized empty. Same manifest checksum as Phase 2, not a content hash of every individual asset nor evidence of hosted upload.
+- GNU time measurements cover command/process children including Wrangler/workerd/Chrome, not per-request isolate CPU/heap or billed usage. Storage SQL counters before restart 20 meta queries/18 chunk queries/51 rows read/49 rows written/5242180 attempted bytes; final restart 3/1/4/0/0. All five job logs scanned for full session-token-shaped strings: zero matches; limited scan, not comprehensive secret-leak proof.
+- GitHub Compare tested ab4e3782 to current HEAD 66b74986 shows only five migration documentation changes. Compare main e4a68a9 to HEAD: 51 changed paths all confined to cloudflare-poc/, docs/cloudflare-migration/, .github/workflows/cloudflare-poc.yml. Main unchanged. This update is documentation-only, no new runtime/test changes. No remote resources, production deployment, main merge or Learning Hub actions performed.
+
+### Current Phase 3 acceptance matrix (supersedes earlier pending snapshots)
+| ID | Evidence | Status |
+|---|---|---|
+| P3-01 | 170 operations classified, 25 core candidates, core and representative deferred callers; exhaustive deferred call graph/client gates remain | LOCAL PASS / release gate |
+| P3-02 | isolated local API, missing secret 503, no fixture endpoints | PASS |
+| P3-03 | one owner bootstrap, restart, closed signup, schema reject/recover, secret rotation | PASS |
+| P3-04 | signed synthetic and actual Chrome virtual registration/login, manual harness smoke PASS; physical UV/manual checklist NOT RUN | VIRTUAL PASS / MANUAL OPEN |
+| P3-05 | challenge cross-purpose, expiry/replay, invalid origin/RP/UV/signature, revoke and rotation invalidation | PASS |
+| P3-06 | bootstrap and credential counter races | PASS |
+| P3-07 | HMAC, expiry, tampering, kind, duplicate/mixed, disabled, HTTPS cookie flags unit | LOCAL PASS |
+| P3-08 | passkey list/add/rename/remove, last-way-in, device link, differential | PASS |
+| P3-09 | owner proof, one live code, TTL/replay/racing redeem, local bounded rates | LOCAL PASS |
+| P3-10 | bearer renewal, kind-c restrictions, revocation/restart | PASS |
+| P3-11 | ordinary logout/global revoke, pending proof/pair/link cancellation | PASS |
+| P3-12 | affirmative same-origin evidence, conflicting/missing metadata, native preflight, encoded/normalized authorization | PASS |
+| P3-13 | health/config, unknown/disabled/fixture routes, safe failure JSON | PASS |
+| P3-14 | authenticated data/rev, identity not client controlled, conflict/restart | PASS |
+| P3-15 | revocation/write race, offline SQLite trigger rollback | PASS |
+| P3-16 | delete confirmation/proof/kind, atomic cleanup, closed bootstrap | PASS |
+| P3-17 | nudge/activity actual upstream behavior and caller review | PASS |
+| P3-18 | supported-core actual upstream differential, selected errors/headers and documented deviations; not full 170-operation parity | LOCAL PASS / release gate |
+| P3-19 | body/challenge/rate/audit bounds, limited safe-log scan, verified local profiling | LOCAL PASS |
+| P3-20 | latest code CI 45657223798 all five jobs PASS, 11204 main-suite tests, all artifacts verified | PASS |
+| P3-21 | branch/safety scope verified; physical evidence and explicit owner acceptance still required | OPEN |
+
+19/21 scoped criteria have passing automated/local evidence; P3-04 and P3-21 remain open. This is not Phase 3 closure or production readiness. Owner may now run [manual physical passkey checklist](phases/PHASE_03_MANUAL_PASSKEY.md) (M3-01..09) on the tested code ab4e3782, or documentation-only successor. Use separate local clone/profile, fresh synthetic data and actual UV-capable authenticator; never share setup code, tokens or credential material. Official installed mobile app acceptance remains Phase 4. Hosted HTTPS, per-request/hosted resource usage and shared quota, trusted-source abuse policy, deferred routes/client capability handling, full backup/recovery and exact diagnostic differences remain release gates. No Phase 4 implementation or deployment authorized.

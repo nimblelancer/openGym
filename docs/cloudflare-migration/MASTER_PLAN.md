@@ -1,7 +1,7 @@
 # openGym Cloudflare migration — master plan
 
 Date: 2026-11-25. Baseline: e4a68a94c42a3c17cbd560d66ce2e46a7048ab99 (v1.4.5). Branch: feat/cloudflare-migration.
-Status: Phase 1 CLOSED local functional POC; Phase 2 CLOSED local storage migration (final CI 45651255730 SUCCESS, 17/17 scoped acceptance). Local aggregate CPU/RSS collected; hosted/per-request qualification still open. Phase 3 core API candidate implemented; local integrated CI, remaining security coverage and physical passkey acceptance pending. No production approval.
+Status: Phase 1 CLOSED local functional POC; Phase 2 CLOSED local storage migration (final CI 45651255730 SUCCESS, 17/17 scoped acceptance). Local aggregate CPU/RSS collected; hosted/per-request qualification still open. Phase 3 core API implemented; final automated local CI 45657223798 SUCCESS (19/21 scoped criteria with passing evidence), physical passkey and owner acceptance pending. No production approval.
 
 ## Goals
 - Run a private, single-owner openGym deployment within the Cloudflare Free plan and the account's remaining quotas.
@@ -51,3 +51,6 @@ Core auth candidate and dedicated CI implemented. Hotfix 001 6/6 auth tests, act
 
 ## Phase 3 review update
 Hotfix 002 CI 45656055740 all 5 jobs PASS. Further affirmative-origin security hardening and bounds passed core/differential/fault tests on b0272f38, but manual browser harness had readiness fixture failure; fixed on ab4e3782 pending CI. Manual physical passkey guide created. Phase 3 remains OPEN for latest integrated CI and physical/owner acceptance, no Phase 4 or deployment.
+
+## Phase 3 final automated review
+Final CI 45657223798 on ab4e3782 SUCCESS, all five jobs, auth 9/9, 11204 main-suite tests. Manual harness virtual smoke PASS and all four artifacts verified. Phase 3 OPEN, ready for manual physical passkey acceptance M3-01..09; P3-04 and P3-21 remain open. No Phase 4 implementation or production approval. See [PHASE_03.md](phases/PHASE_03.md) and [manual guide](phases/PHASE_03_MANUAL_PASSKEY.md).

@@ -1,5 +1,5 @@
 # Phase 3 physical passkey acceptance — localhost only
-Status: NOT RUN by owner. This is not production or Phase 4. Use Node 26 as CI, Chrome/Edge current, Windows Hello or a physical FIDO2 security key with user verification. A real passkey may be saved or synced by the chosen provider; use a disposable test credential, not an existing openGym account. Do not delete unrelated localhost credentials.
+Status: READY FOR MANUAL RUN; NOT RUN by owner. This is not production or Phase 4. Use Node 26 as CI, Chrome/Edge current, Windows Hello or a physical FIDO2 security key with user verification. A real passkey may be saved or synced by the chosen provider; use a disposable test credential, not an existing openGym account. Do not delete unrelated localhost credentials.
 ## Setup (Windows terminal or WSL)
 1. Use a fresh local clone of the feature branch; do not reuse Learning Hub directory or data. Example: git clone --branch feat/cloudflare-migration --single-branch https://github.com/nimblelancer/openGym.git opengym-phase3-local
 2. cd opengym-phase3-local/cloudflare-poc; node -v (26.x); npm ci --no-audit --no-fund.
@@ -23,4 +23,4 @@ Report browser+version, OS, authenticator type, PASS/FAIL for M3-01..09, exact s
 Ctrl+C in terminal stops proxy/Worker and removes disposable local persistence. Close separate profile. Remove only the test passkey named Phase 3 manual fixture under localhost in your passkey manager, if it was saved; verify correct entry first. Do not remove unrelated credentials or real passkeys. No changes to Cloudflare or Learning Hub.
 
 ## Automated harness readiness
-Direct Chrome virtual passkey ceremony has passed. Separate manual UI/proxy Chrome smoke had a duplicate variable followed by a localhost Host readiness probe failure; both fixture changes committed, latest retest pending. Owner should run only after that smoke passes and latest code is reviewed. This is not a physical passkey acceptance result.
+Final CI [45657223798](https://github.com/nimblelancer/openGym/actions/runs/45657223798) on ab4e37829ddb18c74267460e821644c0b5743d18 completed SUCCESS, all five jobs. Direct Chrome virtual and manual UI/proxy virtual smoke both PASS. The readiness gate is met; owner may run M3-01..09 on that tested commit or a documentation-only successor. For an existing test clone, update with git pull --ff-only on the feature branch; verify branch/commit before running. This is not a physical passkey acceptance result. Phase 3 stays open until manual results and explicit owner acceptance.
