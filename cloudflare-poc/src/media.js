@@ -19,15 +19,29 @@ export async function inventory(bucket,uid){
   if(r.truncated||r.objects.length>COUNT||r.objects.some(o=>!HASH_RE.test(o.key.slice(prefix(uid).length))))throw Error('media inventory invalid');
   return {objects:r.objects,usage:{bytes:r.objects.reduce((n,o)=>n+o.size,0),count:r.objects.length,quotaBytes:QUOTA}};
 }
-export async function boundedBytes(req,max){
+// Cap the whole request as well as each read. A slow trickle cannot hold admission
+// indefinitely, and tiny chunks cannot create an unbounded array of buffers.
+export async function boundedBytes(req,max,{idleMs=15000,totalMs=45000}={}){
   const declared=req.headers.get('content-length');
   if(declared!==null&&(!/^\d+$/.test(declared)||Number(declared)>max))return null;
-  if(!req.body)return new Uint8Array();
-  const reader=req.body.getReader(),chunks=[];let n=0;
-  try{while(true){let timer;const {done,value}=await Promise.race([reader.read(),new Promise((_,reject)=>{timer=setTimeout(()=>reject(new HttpInputError(408,'upload stalled')),15000);})]).finally(()=>clearTimeout(timer));if(done)break;n+=value.byteLength;if(n>max){await reader.cancel();return null;}chunks.push(value);}
-  }catch(e){await reader.cancel().catch(()=>{});throw e;}finally{reader.releaseLock();}
-  if(declared!==null&&Number(declared)!==n)throw Error('incomplete body');
-  return Buffer.concat(chunks,n);
+  if(!req.body){if(Number(declared)>0)throw new HttpInputError(400,'incomplete body');return Buffer.alloc(0);}
+  const reader=req.body.getReader(),buf=Buffer.allocUnsafe(declared===null?max:Number(declared));
+  const deadline=Date.now()+totalMs;let n=0;
+  const cancel=()=>{try{reader.cancel().catch(()=>{});}catch{}};
+  try{
+    while(true){
+      const remaining=deadline-Date.now();
+      if(remaining<=0)throw new HttpInputError(408,'upload deadline exceeded');
+      let timer;
+      const {done,value}=await Promise.race([reader.read(),new Promise((_,reject)=>{timer=setTimeout(()=>reject(new HttpInputError(408,'upload stalled or deadline exceeded')),Math.min(idleMs,remaining));})]).finally(()=>clearTimeout(timer));
+      if(done)break;
+      if(n+value.byteLength>max){cancel();return null;}
+      if(n+value.byteLength>buf.length)throw new HttpInputError(400,'content-length mismatch');
+      buf.set(value,n);n+=value.byteLength;
+    }
+    if(declared!==null&&Number(declared)!==n)throw new HttpInputError(400,'incomplete body');
+    return buf.subarray(0,n);
+  }catch(e){cancel();throw e;}finally{reader.releaseLock();}
 }
 export function inspect(bytes,declared){
   const sn=sniffKind(bytes.subarray(0,64)),type=MEDIA_MIMES[declared];
