@@ -1,4 +1,5 @@
 // @vitest-environment happy-dom
+// Phase 4 CI retrigger checkpoint: run the unchanged mobile contract assertions.
 // Copied to frontend/src/lib in the disposable CI checkout only. Pinned client modules
 // and actual local HTTP backend; OS file storage and native plugin transport are simulated.
 import { it, expect, vi } from 'vitest'
