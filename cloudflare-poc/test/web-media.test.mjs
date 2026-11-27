@@ -6,7 +6,7 @@ import {join} from 'node:path';
 import {request} from 'node:http';
 import {setTimeout as sleep} from 'node:timers/promises';
 import {DatabaseSync} from 'node:sqlite';
-import {MediaLifecycle,GRACE_MS,DELETE_BATCH,SWEEP_BATCH} from '../src/media-lifecycle.js';
+import {MediaLifecycle,GRACE_MS,DELETE_BATCH} from '../src/media-lifecycle.js';
 import {localRunner} from './local-runner.mjs';
 import {authenticator} from './auth-fixture.mjs';
 import {inspect,parseRange,boundedBytes,readMediaJson,handleMedia,inventory} from '../src/media.js';
@@ -102,7 +102,7 @@ test('all supported media reference locations and local-only set behavior',()=>{
   assert.equal(uploadableFiles(local).length,0);
   assert.equal(referencedHashes(local).size,2);
 });
-test('GC marks survive restart, preserve references, and retry failed deletion',async()=>{
+test('GC observations survive restart and long-offline references; authorized deletion remains recoverable',async()=>{
   const uid='abcdefghijklmnop',key='private/v1/'+uid+'/'+hash;
   const db=new DatabaseSync(':memory:');let now=Date.now(),state={kind:'ok',state:{workouts:[]}},live=true,fail=false;
   db.exec('CREATE TABLE auth_users (id TEXT PRIMARY KEY, disabled INTEGER, sv INTEGER); CREATE TABLE auth_codes (uid TEXT); CREATE TABLE auth_challenges (id TEXT);');
@@ -113,22 +113,31 @@ test('GC marks survive restart, preserve references, and retry failed deletion',
   const make=()=>new MediaLifecycle(repo,{read:async()=>state},bucket,{now:()=>now});
   let l=make();
   try{
-    assert.equal((await l.sweep(uid,()=>live)).body.removed,0);
+    const first=await l.sweep(uid,()=>live);assert.equal(first.body.removed,0);assert.equal(first.body.retained,1);
     now+=GRACE_MS+1;
     state={kind:'corrupt'};assert.equal((await l.sweep(uid,()=>live)).status,503);assert.ok(objects.has(key));
+    state={kind:'ok',state:{workouts:[]}};
+    // A stale device can still have the only reference and no local bytes.
+    // Age both the actual object and its mark well beyond the old grace, restart,
+    // and forbid every destructive call on this non-account-deletion path.
+    now+=365*86400000;l=make();fail=true;
+    const retained=await l.sweep(uid,()=>live);
+    assert.equal(retained.status,200);assert.equal(retained.body.removed,0);assert.equal(retained.body.freedBytes,0);
+    assert.equal(retained.body.retained,1);assert.equal(retained.body.retainedBytes,image.length);assert.equal(retained.body.pastGrace,1);
+    assert.equal(retained.body.usage.count,1);assert.equal(retained.body.usage.bytes,image.length);assert.ok(objects.has(key));
     state={kind:'ok',state:{customEx:[{media:{hash}}]}};
-    repo.tx(()=>l.noteState(uid,state.state));assert.equal((await l.sweep(uid,()=>live)).body.removed,0);
-    state={kind:'ok',state:{workouts:[]}};assert.equal((await l.sweep(uid,()=>live)).body.removed,0);
-    l=make();now+=GRACE_MS+1;fail=true;
-    await assert.rejects(l.sweep(uid,()=>live),/injected/);assert.ok(objects.has(key));
-    fail=false;assert.equal((await l.sweep(uid,()=>live)).body.removed,1);assert.equal(objects.size,0);
-    for(let n=0;n<SWEEP_BATCH+1;n++){const k='private/v1/'+uid+'/'+sha('sweep-'+n);objects.set(k,{key:k,size:1,uploaded:new Date(now),etag:'sweep-'+n});}
+    repo.tx(()=>l.noteState(uid,state.state));
+    assert.equal(repo.one('SELECT count(*) AS n FROM media_gc WHERE uid=?',uid).n,0);
+    assert.equal((await l.sweep(uid,()=>live)).body.retained,0);assert.ok(objects.has(key));
+    state={kind:'ok',state:{workouts:[]}};
+    assert.equal((await l.sweep(uid,()=>live)).body.retained,1);
+    for(let n=0;n<9;n++){const k='private/v1/'+uid+'/'+sha('sweep-'+n);objects.set(k,{key:k,size:1,uploaded:new Date(now),etag:'sweep-'+n});}
     assert.equal((await l.sweep(uid,()=>live)).body.removed,0);
-    now+=GRACE_MS+1;
-    assert.equal((await l.sweep(uid,()=>live)).body.removed,SWEEP_BATCH);
-    assert.equal(objects.size,1);
-    assert.equal((await l.sweep(uid,()=>live)).body.removed,1);
-    assert.equal(objects.size,0);
+    now+=GRACE_MS+1;l=make();
+    const all=await l.sweep(uid,()=>live);
+    assert.equal(all.body.pastGrace,10);assert.equal(all.body.removed,0);assert.equal(objects.size,10);
+    console.log('PHASE5_LONG_OFFLINE_RETENTION PASS');
+    fail=false;objects.clear(); // isolate the explicitly authorized account-deletion fixture below
     objects.set(key,{key,size:image.length,uploaded:new Date(now),etag:'two'});
     // Durable intent is written before R2 deletion. A failed cleanup cannot finalize the account.
     repo.tx(()=>l.begin(uid));assert.equal(repo.user(uid).disabled,1);
@@ -257,7 +266,7 @@ test('actual local Worker: SPA, private R2, authenticated media contract and res
     await data(await raw('/api/data','PUT',JSON.stringify({state:{workouts:[],routines:[],customEx:[],resetAt:Date.now()},baseRev:current.rev,baseWid:current.state._wid,stamped:true}),{'content-type':'application/json',...auth()}));
     const afterReset=await data(await post('/api/media/sweep',{},auth()));
     // Deliberately retain recently unreferenced objects for offline clients; never pretend they were deleted.
-    assert.equal(afterReset.removed,0);assert.equal(afterReset.usage.count,1);
+    assert.equal(afterReset.removed,0);assert.equal(afterReset.usage.count,1);assert.equal(afterReset.retained,1);assert.equal(afterReset.retainedBytes,image.length);assert.equal(afterReset.policy,'retain-until-authorized-delete');
     assert.equal((await raw('/api/me','GET',undefined,mobile)).status,200);
     assert.equal((await post('/api/account/delete',{name:'wrong name'},mobile)).status,400);
     assert.equal((await raw(path,'HEAD',undefined,mobile)).status,200);
@@ -267,6 +276,7 @@ test('actual local Worker: SPA, private R2, authenticated media contract and res
     const gotAudio=await raw('/api/media/'+audioHash,'GET',undefined,auth());
     assert.equal(gotAudio.status,200);assert.equal(gotAudio.headers.get('content-type'),'audio/wav');
     assert.deepEqual(Buffer.from(await gotAudio.arrayBuffer()),audio);
+    const audioRange=await raw('/api/media/'+audioHash,'GET',undefined,{...auth(),range:'bytes=44-55'});assert.equal(audioRange.status,206);assert.equal(audioRange.headers.get('content-range'),'bytes 44-55/'+audio.length);assert.deepEqual(Buffer.from(await audioRange.arrayBuffer()),audio.subarray(44,56));
     console.log('PHASE5_CANONICAL_AUDIO_R2 PASS');
     console.log('PHASE5_PRIVATE_MEDIA_AUTH_RANGE PASS');
     await runner.stop();await runner.start();
@@ -284,6 +294,10 @@ test('actual local Worker: SPA, private R2, authenticated media contract and res
     const nextPair=await data(await post('/api/pair/create',{cid:pairOpts.cid,credential:dev.login(pairOpts.options.challenge,++count)},auth()));
     const nextToken=(await data(await post('/api/pair/redeem',{code:nextPair.code}))).token;
     const deleting={authorization:'Bearer '+nextToken,origin:'capacitor://localhost'};
+    // Fill the real local R2 namespace with enough distinct valid WAV files for
+    // multiple bounded recovery requests (35 total including the existing two).
+    for(let n=0;n<33;n++){const b=wav(2206+n),h=sha(b);await data(await raw('/api/media/'+h,'PUT',b,{'content-type':'audio/wav',...auth(),'x-opengym-account':uid}),201);}
+    assert.equal((await data(await post('/api/media/missing',{hashes:[hash,audioHash]},auth()))).usage.count,35);
     // Interrupt the final SQLite transaction after R2 cleanup. The intent and disabled
     // owner must survive restart; health recovery finishes only the authorized deletion.
     await runner.stop();const dbPath=await findAuthDb(runner.dir);assert.ok(dbPath);
@@ -292,6 +306,10 @@ test('actual local Worker: SPA, private R2, authenticated media contract and res
     await runner.start();
     assert.equal((await post('/api/account/delete',{name:'Synthetic Owner'},deleting)).status,503);
     assert.equal((await raw(path,'GET',undefined,deleting)).status,503);
+    // Second bounded batch still cannot acknowledge deletion; the final batch
+    // reaches the injected transaction failure. All responses remain unavailable.
+    for(let n=0;n<2;n++)assert.equal((await raw('/api/health')).status,503);
+    assert.equal((await raw('/api/me','GET',undefined,deleting)).status,503);
     await runner.stop();db=new DatabaseSync(dbPath,{timeout:5000});
     try{
       assert.equal(db.prepare('SELECT uid FROM media_delete_intent').get().uid,uid);
@@ -303,6 +321,7 @@ test('actual local Worker: SPA, private R2, authenticated media contract and res
     assert.equal((await raw(path,'GET',undefined,deleting)).status,401);
     await runner.stop();db=new DatabaseSync(dbPath,{timeout:5000});
     try{for(const table of ['media_delete_intent','media_gc','auth_users','auth_creds','profile_state','profile_chunks'])assert.equal(db.prepare('SELECT count(*) AS n FROM '+table).get().n,0,table);}finally{db.close();}
+    console.log('PHASE5_LARGE_LOCAL_R2_DELETE_RECOVERY PASS');
     console.log('PHASE5_RESET_GRACE_ACCOUNT_DELETE PASS');
   }finally{await runner.cleanup();}
 });
