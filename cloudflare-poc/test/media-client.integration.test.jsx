@@ -8,9 +8,10 @@ import {createHash,randomBytes} from 'node:crypto'
 import {localRunner} from '../../../cloudflare-poc/test/local-runner.mjs'
 import {authenticator} from '../../../cloudflare-poc/test/auth-fixture.mjs'
 import {createMediaSync} from './media-sync.js'
-import {createMediaStore,memoryBackend} from './media-store.js'
+import {createMediaStore,memoryBackend,_setMediaStore} from './media-store.js'
 import {api,apiBlob,apiUpload,setRemoteAuth} from './api.js'
-import { _resetMediaOwed } from './media-owed.js'
+import { _resetMediaOwed,pendingRefCount } from './media-owed.js'
+import {LOCAL_CACHE_MAX_MB,LOCAL_GC_GRACE_MS,MB} from './media-limits.js'
 import {mp4} from './media-samples.test-util.js'
 import {auditMigrationMedia} from '../../../cloudflare-poc/src/migration-media-preflight.js'
 it('actual media-sync uploads, retries, deduplicates, downloads and refuses stale owner against local R2',async()=>{
@@ -193,5 +194,45 @@ it('actual media-sync uploads, retries, deduplicates, downloads and refuses stal
     expect(sha(new Uint8Array(await (await second.get(largeHash)).blob.arrayBuffer()))).toBe(largeHash)
     expect(uploads).toBe(beforeLarge)
     console.log('PHASE5_READ_ONLY_PREFLIGHT_AND_EXPLICIT_RESTAGE PASS')
-  }finally{setRemoteAuth('',null);vi.unstubAllGlobals();_resetMediaOwed();await runner.cleanup()}
+    // Exercise the actual frozen GC and owed counter, not just a flag assertion.
+    // Synthetic cache-pressure metadata avoids allocating 300 MiB of filler.
+    // Only disposable memory stores are mutated; the verified independent copy remains.
+    let clock=100*LOCAL_GC_GRACE_MS
+    const pressureHash=sha(Buffer.from('synthetic-pressure-metadata'))
+    const pressureBackend=async()=>{
+      const be=memoryBackend()
+      await be.put({hash:pressureHash,mime:'image/png',size:LOCAL_CACHE_MAX_MB*MB,putAt:clock+2*LOCAL_GC_GRACE_MS,shownAt:0,pending:true,rejected:false},null)
+      return createMediaStore(be,{now:()=>clock})
+    }
+    const gcFor=media=>createMediaSync({store,media,now:()=>clock,storage:null,nativeLoad:null,locks:null,toast:()=>{}})
+    const unsafe=await pressureBackend(),safe=await pressureBackend()
+    await unsafe.put(largeHash,legacy.blob,{mime:legacy.mime,pending:false})
+    await unsafe.markRejected(largeHash)
+    await safe.put(largeHash,legacy.blob,{mime:legacy.mime,pending:false})
+    await safe.markRejected(largeHash)
+    const legacyDoc=legacySnapshot.state
+    _resetMediaOwed();_setMediaStore(unsafe)
+    expect(pendingRefCount(legacyDoc)).toBe(0)
+    clock+=2*LOCAL_GC_GRACE_MS
+    await gcFor(unsafe).localMediaGc()
+    expect(await unsafe.get(largeHash)).toBeNull()
+    console.log('PHASE5_LEGACY_ACK_CACHE_EVICTION RISK_REPRODUCED')
+    // Re-stage on the other copy, then age it past the grace period too.
+    // Refresh the filler timestamp so it is still counted under pressure.
+    await safe.put(largeHash,legacy.blob,{mime:legacy.mime,pending:true})
+    // Keep filler referenced via a disposable active set (no network upload).
+    st.S.active={entries:[{sets:[{media:[{hash:pressureHash,local:true}]}]}]}
+    _resetMediaOwed();_setMediaStore(safe)
+    expect(pendingRefCount(legacyDoc)).toBe(1)
+    clock+=2*LOCAL_GC_GRACE_MS
+    expect((await safe.usage()).bytes).toBeGreaterThan(LOCAL_CACHE_MAX_MB*MB)
+    await gcFor(safe).localMediaGc()
+    const preserved=await safe.get(largeHash)
+    expect(preserved).toMatchObject({pending:true,rejected:true})
+    expect(sha(new Uint8Array(await preserved.blob.arrayBuffer()))).toBe(largeHash)
+    expect(pendingRefCount(legacyDoc)).toBe(1)
+    expect((await safe.usage()).bytes).toBeGreaterThan(LOCAL_CACHE_MAX_MB*MB)
+    delete st.S.active
+    console.log('PHASE5_EXPLICIT_RESTAGE_CACHE_AND_OWED_PRESERVATION PASS')
+  }finally{setRemoteAuth('',null);vi.unstubAllGlobals();_resetMediaOwed();_setMediaStore(null);await runner.cleanup()}
 },180000)

@@ -403,6 +403,19 @@ test('read-only migration audit verifies known bytes and fails closed on missing
   assert.ok(conflict.issues.includes('conflicting-reference-metadata'));assert.equal(conflict.cutoverAuthorized,false);
   await assert.rejects(auditMigrationMedia({...args,snapshots:[{owner:'another',state:{}}]}),/foreign snapshot/);
   let checks=0;await assert.rejects(auditMigrationMedia({...args,isCurrent:async()=>++checks===1}),/snapshot or owner changed/);
+  const wrongMime=await auditMigrationMedia({...args,snapshots:[{owner,state:{customEx:[{media:{...m,mime:'constructor'}}]}}]});
+  assert.ok(wrongMime.issues.includes('invalid-reference-metadata'));assert.equal(wrongMime.knownMediaVerified,false);
+  const localOnly=await auditMigrationMedia({...args,snapshots:[{owner,state:{workouts:[{entries:[{sets:[{media:[{...m,local:true}]}]}]}]}}]});
+  assert.ok(localOnly.issues.includes('device-local-restore-required'));assert.equal(localOnly.minimumDestination.count,0);assert.equal(localOnly.knownMediaVerified,false);
+  // Multiple device snapshots may reference the same bytes; count once.
+  const min=await auditMigrationMedia({...args,snapshots:[...snapshots,...snapshots]});
+  assert.deepEqual(min.minimumDestination,{bytes:image.length,count:1});
+  const largeRefs=Array.from({length:501},(_,n)=>({media:{...m,hash:sha('minimum-quota-'+n),size:MB}}));
+  const capacity=await auditMigrationMedia({...args,snapshots:[{owner,state:{customEx:largeRefs}}],readLocal:async()=>null,readBackup:async()=>null,readDestination:async()=>null});
+  assert.deepEqual(capacity.minimumDestination,{bytes:501*MB,count:501});
+  assert.ok(capacity.issues.includes('destination-minimum-byte-quota'));assert.ok(capacity.issues.includes('destination-minimum-object-quota'));
+  assert.equal(capacity.cutoverAuthorized,false);
+  console.log('PHASE5_PREFLIGHT_CAPACITY_LOCAL_ONLY_GATES PASS');
   console.log('PHASE5_MIGRATION_PREFLIGHT_INTEGRITY PASS');
 });
 
@@ -522,6 +535,31 @@ test('verified encrypted disk fixture restores known state/media to an independe
     assert.equal(sha(Buffer.from(await (await source.read(hash,sourceOwner)).arrayBuffer())),hash);
     assert.equal(sha(Buffer.from(await (await source.read(ah,sourceOwner)).arrayBuffer())),ah);
     assert.deepEqual(await readFile(archivePath),encrypted);
+    // Existing device bytes may exceed the destination cap even though the old
+    // server accepted them. Keep a separate encrypted fixture and do not publish
+    // a dangling ref or silently transcode/drop the original.
+    const old=mp4().file,large=Buffer.alloc(8*MB+1);
+    large.set(old);large.writeUInt32BE(large.length-old.length,old.length);large.write('free',old.length+4);
+    const lh=sha(large),lr={kind:'video',hash:lh,mime:'video/mp4',size:large.length,width:1920,height:1080,dur:5,at:1};
+    const legacyState={customEx:[{id:'legacy-video',media:lr}]};
+    const legacyPath=join(backupDir,'legacy.enc');
+    const legacyArchive=seal(Buffer.from(JSON.stringify({version:1,sourceOwner,state:legacyState,files:[{hash:lh,mime:lr.mime,size:large.length,bytes:large.toString('base64')}]})));
+    await writeFile(legacyPath,legacyArchive,{mode:0o600,flag:'wx'});
+    const legacyRestored=open(await readFile(legacyPath)),legacyBytes=Buffer.from(legacyRestored.files[0].bytes,'base64');
+    assert.deepEqual(legacyRestored.state,legacyState);assert.equal(legacyRestored.sourceOwner,sourceOwner);
+    assert.equal(legacyBytes.length,large.length);assert.equal(sha(legacyBytes),lh);
+    const legacyAudit=await auditMigrationMedia({owner:destinationOwner,snapshots:[{owner:destinationOwner,state:legacyRestored.state}],
+      readLocal:async()=>null,readBackup:async h=>h===lh?new Blob([legacyBytes],{type:lr.mime}):null,
+      readDestination:h=>target.read(h,destinationOwner),isCurrent:owner=>target.current(owner,committed.rev,committed.state._wid)});
+    assert.deepEqual(legacyAudit.issues,['destination-not-verified','destination-size-limit']);
+    assert.deepEqual(legacyAudit.records,[{hash:lh,local:'missing',backup:'verified',destination:'missing',overLimit:true}]);
+    assert.equal(legacyAudit.cutoverAuthorized,false);
+    const reject=await target.put(lh,legacyBytes,lr.mime);assert.equal(reject.status,413);assert.equal((await reject.json()).code,'media-too-large');
+    assert.equal(await target.read(lh,destinationOwner),null);
+    assert.deepEqual(await target.state(),committed);
+    assert.deepEqual(await readFile(legacyPath),legacyArchive);
+    assert.equal(sha(Buffer.from(open(await readFile(legacyPath)).files[0].bytes,'base64')),lh);
+    console.log('PHASE5_OVERSIZED_ENCRYPTED_BACKUP_PRESERVED PASS');
     console.log('PHASE5_ENCRYPTED_DISK_BACKUP_RESTORE PASS');
     console.log('PHASE5_DESTINATION_OWNER_REVISION_PREFLIGHT PASS');
   }finally{key.fill(0);await source.runner.cleanup();await target.runner.cleanup();await rm(backupDir,{recursive:true,force:true});}
