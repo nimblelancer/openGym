@@ -12,6 +12,7 @@ import {createMediaStore,memoryBackend} from './media-store.js'
 import {api,apiBlob,apiUpload,setRemoteAuth} from './api.js'
 import { _resetMediaOwed } from './media-owed.js'
 import {mp4} from './media-samples.test-util.js'
+import {auditMigrationMedia} from '../../../cloudflare-poc/src/migration-media-preflight.js'
 it('actual media-sync uploads, retries, deduplicates, downloads and refuses stale owner against local R2',async()=>{
   const AUTH_SECRET=randomBytes(32).toString('hex'),SETUP_CODE=randomBytes(32).toString('hex')
   const runner=await localRunner('wrangler.web-media.jsonc',{cwd:resolve('../cloudflare-poc'),health:'/api/health',privateLogs:true,syntheticDiagnostics:true,vars:origin=>({AUTH_SECRET,SETUP_CODE,API_ORIGIN:origin,RP_ID:'localhost',P5_MEDIA:'1'})})
@@ -170,5 +171,27 @@ it('actual media-sync uploads, retries, deduplicates, downloads and refuses stal
     expect(sha(new Uint8Array(await legacy.blob.arrayBuffer()))).toBe(largeHash)
     expect(uploads).toBe(beforeLarge)
     console.log('PHASE5_LEGACY_ACK_PENDING_GAP RISK_REPRODUCED')
+    // Read-only qualification against the real destination. A prior ACK is not
+    // a receipt. Even a byte-verified independent synthetic copy cannot authorize
+    // cutover while a destination file is missing or incompatible.
+    const legacySnapshot={owner:uid,state:{customEx:[{media:largeRef}]}};
+    const backupCopies=new Map([[largeHash,new Blob([new Uint8Array(large)],{type:'video/mp4'})]]);
+    const audit=await auditMigrationMedia({owner:uid,snapshots:[legacySnapshot],
+      readLocal:async h=>(await second.get(h))?.blob||null,
+      readBackup:async h=>backupCopies.get(h)||null,
+      readDestination:async h=>{try{const b=await apiBlob('/api/media/'+h,{fetchImpl:transport});return new Blob([await b.arrayBuffer()],{type:largeRef.mime})}catch(e){if(e.status===404)return null;throw e}},
+      isCurrent:async owner=>owner===uid&&st.user.id===uid});
+    expect(audit.records).toEqual([{hash:largeHash,local:'verified',backup:'verified',destination:'missing',overLimit:true}])
+    expect(audit.issues).toEqual(['destination-not-verified','destination-size-limit'])
+    expect(audit.cutoverAuthorized).toBe(false)
+    expect((await second.get(largeHash)).pending).toBe(false)
+    // Explicitly re-stage the verified bytes using the frozen store's public API
+    // in this disposable test only. No automatic mutation during preflight.
+    await second.put(largeHash,legacy.blob,{mime:legacy.mime,pending:true})
+    await make(second).syncMedia({force:true,retryRejected:true})
+    expect((await second.get(largeHash))).toMatchObject({pending:true,rejected:true})
+    expect(sha(new Uint8Array(await (await second.get(largeHash)).blob.arrayBuffer()))).toBe(largeHash)
+    expect(uploads).toBe(beforeLarge)
+    console.log('PHASE5_READ_ONLY_PREFLIGHT_AND_EXPLICIT_RESTAGE PASS')
   }finally{setRemoteAuth('',null);vi.unstubAllGlobals();_resetMediaOwed();await runner.cleanup()}
 },180000)

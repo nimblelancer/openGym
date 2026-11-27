@@ -7,6 +7,7 @@ import {request} from 'node:http';
 import {setTimeout as sleep} from 'node:timers/promises';
 import {DatabaseSync} from 'node:sqlite';
 import {MediaLifecycle,GRACE_MS,DELETE_BATCH} from '../src/media-lifecycle.js';
+import {auditMigrationMedia} from '../src/migration-media-preflight.js';
 import {localRunner} from './local-runner.mjs';
 import {authenticator} from './auth-fixture.mjs';
 import {inspect,parseRange,boundedBytes,readMediaJson,handleMedia,inventory} from '../src/media.js';
@@ -382,4 +383,24 @@ test('actual local Worker: SPA, private R2, authenticated media contract and res
     console.log('PHASE5_LARGE_LOCAL_R2_DELETE_RECOVERY PASS');
     console.log('PHASE5_RESET_GRACE_ACCOUNT_DELETE PASS');
   }finally{await runner.cleanup();}
+});
+
+test('read-only migration audit verifies known bytes and fails closed on missing, corrupt or stale sources',async()=>{
+  const owner='abcdefghijklmnop',blob=new Blob([image],{type:'image/png'});
+  const m={hash,mime:'image/png',kind:'image',size:image.length,width:1,height:1};
+  const snapshots=[{owner,state:{customEx:[{media:m}],active:{entries:[{sets:[{media:[m]}]}]}}}];
+  const args={owner,snapshots,readLocal:async()=>blob,readBackup:async()=>blob,readDestination:async()=>blob,isCurrent:async()=>true};
+  const good=await auditMigrationMedia(args);
+  assert.equal(good.knownMediaVerified,true);assert.equal(good.cutoverAuthorized,false);assert.equal(good.records.length,1);
+  const missing=await auditMigrationMedia({...args,readDestination:async()=>null});
+  assert.equal(missing.knownMediaVerified,false);assert.deepEqual(missing.issues,['destination-not-verified']);
+  const invalid=await auditMigrationMedia({...args,readBackup:async()=>new Blob([Buffer.alloc(image.length)],{type:'image/png'})});
+  assert.deepEqual(invalid.issues,['backup-not-verified']);assert.equal(invalid.records[0].backup,'invalid');
+  const lost=await auditMigrationMedia({...args,readLocal:async()=>null,readBackup:async()=>null,readDestination:async()=>{throw Error('unreadable')}});
+  assert.ok(lost.issues.includes('no-verified-copy'));assert.equal(lost.records[0].destination,'unreadable');
+  const conflict=await auditMigrationMedia({...args,snapshots:[...snapshots,{owner,state:{customEx:[{media:{...m,size:m.size+1}}]}}]});
+  assert.ok(conflict.issues.includes('conflicting-reference-metadata'));assert.equal(conflict.cutoverAuthorized,false);
+  await assert.rejects(auditMigrationMedia({...args,snapshots:[{owner:'another',state:{}}]}),/foreign snapshot/);
+  let checks=0;await assert.rejects(auditMigrationMedia({...args,isCurrent:async()=>++checks===1}),/snapshot or owner changed/);
+  console.log('PHASE5_MIGRATION_PREFLIGHT_INTEGRITY PASS');
 });

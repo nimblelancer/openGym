@@ -1,7 +1,7 @@
 // Real built React SPA, Chromium, local Worker + R2. Synthetic credentials and pixels only.
 import {test} from 'node:test';
 import assert from 'node:assert/strict';
-import {spawn} from 'node:child_process';
+import {spawn,execFileSync} from 'node:child_process';
 import {once} from 'node:events';
 import {mkdtemp,readFile,rm} from 'node:fs/promises';
 import {join} from 'node:path';
@@ -64,6 +64,16 @@ test('mounted production-built SPA renders a private progress photo and full-siz
     await cdp('WebAuthn.enable');await cdp('WebAuthn.addVirtualAuthenticator',{options:{protocol:'ctap2',transport:'internal',hasResidentKey:true,hasUserVerification:true,isUserVerified:true,automaticPresenceSimulation:true}});
     await cdp('Page.navigate',{url:runner.origin+'/'});
     await wait("document.querySelector('#root')?.textContent.includes('Create new profile')",'actual login UI did not mount');
+    // Produce real decodable fixture bytes instead of opaque hand-maintained base64.
+    // Only synthetic lavfi inputs; no network or user files. Fail if encoder unavailable.
+    const generated={};
+    for(const [name,size,format,codec] of [['mp4','48x32','mp4','libx264'],['mov','64x32','mov','libx264'],['gif','6x4','gif','gif']]){
+      const file=join(dir,'fixture.'+name);
+      const input=name==='gif'?'testsrc=size='+size+':rate=4:duration=1':'color=c=blue:s='+size+':r=5:d=1';
+      execFileSync('ffmpeg',['-hide_banner','-loglevel','error','-y','-f','lavfi','-i',input,'-an','-threads','1','-c:v',codec,...(name==='gif'?[]:['-pix_fmt','yuv420p','-profile:v','baseline','-movflags','+faststart']),'-f',format,file],{timeout:20000,stdio:['ignore','ignore','pipe']});
+      const bytes=await readFile(file);assert.ok(bytes.length>0&&bytes.length<128*1024);
+      generated[name]=bytes.toString('base64');
+    }
     const fixture=await evaluate(`(async()=>{
       const post=async(p,b)=>{const r=await fetch(p,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(b)});if(!r.ok)throw Error('POST '+p+' '+r.status);return r.json();};
       const o=await post('/api/register/options',{name:'Synthetic browser',code:${JSON.stringify(SETUP_CODE)}});
@@ -102,10 +112,9 @@ test('mounted production-built SPA renders a private progress photo and full-siz
       };
       const videoHash=await upload(video),audioHash=await upload(audio);
       const from64=(data,type)=>new Blob([Uint8Array.from(atob(data),x=>x.charCodeAt(0))],{type});
-      // Real generated 1 s H.264 baseline MP4/MOV, 3 fps, no personal media.
-      const mp4=from64('AAAAIGZ0eXBpc29tAAACAGlzb21pc28yYXZjMW1wNDEAAAMtbW9vdgAAAGxtdmhkAAAAAAAAAAAAAAAAAAAD6AAAA+gAAQAAAQAAAAAAAAAAAAAAAAEAAAAAAAAAAAAAAAAAAAABAAAAAAAAAAAAAAAAAABAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAgAAAlh0cmFrAAAAXHRraGQAAAADAAAAAAAAAAAAAAABAAAAAAAAA+gAAAAAAAAAAAAAAAAAAAAAAAEAAAAAAAAAAAAAAAAAAAABAAAAAAAAAAAAAAAAAABAAAAAADAAAAAgAAAAAAAkZWR0cwAAABxlbHN0AAAAAAAAAAEAAAPoAAAAAAABAAAAAAHQbWRpYQAAACBtZGhkAAAAAAAAAAAAAAAAAAAwAAAAMABVxAAAAAAALWhkbHIAAAAAAAAAAHZpZGUAAAAAAAAAAAAAAABWaWRlb0hhbmRsZXIAAAABe21pbmYAAAAUdm1oZAAAAAEAAAAAAAAAAAAAACRkaW5mAAAAHGRyZWYAAAAAAAAAAQAAAAx1cmwgAAAAAQAAATtzdGJsAAAAt3N0c2QAAAAAAAAAAQAAAKdhdmMxAAAAAAAAAAEAAAAAAAAAAAAAAAAAAAAAADAAIABIAAAASAAAAAAAAAABFUxhdmM2MS4xOS4xMDEgbGlieDI2NAAAAAAAAAAAAAAAGP//AAAALWF2Y0MBQsAK/+EAFmdCwAraNbARAAADAAEAAAMABg8SJqABAARozg/IAAAAEHBhc3AAAAABAAAAAQAAABRidHJ0AAAAAAAAAXgAAAAAAAAAGHN0dHMAAAAAAAAAAQAAAAMAABAAAAAAFHN0c3MAAAAAAAAAAQAAAAEAAAAcc3RzYwAAAAAAAAABAAAAAQAAAAMAAAABAAAAIHN0c3oAAAAAAAAAAAAAAAMAAAAbAAAACgAAAAoAAAAUc3RjbwAAAAAAAAABAAADXQAAAGF1ZHRhAAAAWW1ldGEAAAAAAAAAIWhkbHIAAAAAAAAAAG1kaXJhcHBsAAAAAAAAAAAAAAAALGlsc3QAAAAkqXRvbwAAABxkYXRhAAAAAQAAAABMYXZmNjEuNy4xMDMAAAAIZnJlZQAAADdtZGF0AAAAF2WIhDoRigACGPHAAED2OAAIeUnJ1114AAAABkGaIBGjwAAAAAZBmkARo8A=','video/mp4');
-      const mov=from64('AAAAFGZ0eXBxdCAgAAACAHF0ICAAAAMEbW9vdgAAAGxtdmhkAAAAAAAAAAAAAAAAAAAD6AAAA+gAAQAAAQAAAAAAAAAAAAAAAAEAAAAAAAAAAAAAAAAAAAABAAAAAAAAAAAAAAAAAABAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAgAAAnB0cmFrAAAAXHRraGQAAAADAAAAAAAAAAAAAAABAAAAAAAAA+gAAAAAAAAAAAAAAAAAAAAAAAEAAAAAAAAAAAAAAAAAAAABAAAAAAAAAAAAAAAAAABAAAAAAEAAAAAgAAAAAAAkZWR0cwAAABxlbHN0AAAAAAAAAAEAAAPoAAAAAAABAAAAAAHobWRpYQAAACBtZGhkAAAAAAAAAAAAAAAAAAAwAAAAMAB//wAAAAAALWhkbHIAAAAAbWhscnZpZGUAAAAAAAAAAAAAAAAMVmlkZW9IYW5kbGVyAAABk21pbmYAAAAUdm1oZAAAAAEAAAAAAAAAAAAAACxoZGxyAAAAAGRobHJ1cmwgAAAAAAAAAAAAAAAAC0RhdGFIYW5kbGVyAAAAJGRpbmYAAAAcZHJlZgAAAAAAAAABAAAADHVybCAAAAABAAABJ3N0YmwAAACjc3RzZAAAAAAAAAABAAAAk2F2YzEAAAAAAAAAAQAAAABGRk1QAAACAAAAAgAAQAAgAEgAAABIAAAAAAAAAAEVTGF2YzYxLjE5LjEwMSBsaWJ4MjY0AAAAAAAAAAAAAAAY//8AAAAtYXZjQwFCwAr/4QAWZ0LACtoRbARAAAADAEAAAAMBg8SJqAEABGjOD8gAAAAQcGFzcAAAAAEAAAABAAAAGHN0dHMAAAAAAAAAAQAAAAMAABAAAAAAFHN0c3MAAAAAAAAAAQAAAAEAAAAcc3RzYwAAAAAAAAABAAAAAQAAAAMAAAABAAAAIHN0c3oAAAAAAAAAAAAAAAMAAAAdAAAACgAAAAoAAAAUc3RjbwAAAAAAAAABAAADKAAAACB1ZHRhAAAAGKlzd3IADFXETGF2ZjYxLjcuMTAzAAAACHdpZGUAAAA5bWRhdAAAABlliIQ6EYoAAhjxwABA9jgACHlJycnXXXXgAAAABkGaIBGhMAAAAAZBmkARoTA=','video/quicktime');
-      const gif=from64('R0lGODlhBgAEAIEAAP8AAAAAAAAAAAAAACH/C05FVFNDQVBFMi4wAwEAAAAh+QQAHgAAACwAAAAABgAEAAAICwABCBxIsKDBgQEBACH5BAEeAAEALAAAAAAGAAQAgQAA/wAAAAAAAAAAAAgLAAEIHEiwoMGBAQEAOw==','image/gif');
+      const mp4=from64(${JSON.stringify(generated.mp4)},'video/mp4');
+      const mov=from64(${JSON.stringify(generated.mov)},'video/quicktime');
+      const gif=from64(${JSON.stringify(generated.gif)},'image/gif');
       const wc=document.createElement('canvas');wc.width=20;wc.height=10;wc.getContext('2d').fillRect(0,0,20,10);
       const webp=await new Promise(r=>wc.toBlob(r,'image/webp',0.8));
       if(!webp||webp.type!=='image/webp')throw Error('WebP encode failed');
@@ -127,18 +136,21 @@ test('mounted production-built SPA renders a private progress photo and full-siz
       if(actual.length!==16||!actual.every((v,n)=>v===expected[n]))throw Error('video range bytes');
       for(const f of formats)f.poster=videoRef.poster;
       const cur=await (await fetch('/api/data')).json();
-      const state={...(cur.state||{}),workouts:[{id:'p5-video-workout',name:'Synthetic video workout',d:'2026-09-20',start:1000,end:2000,entries:[],media:[videoRef,...formats]}],routines:[],sound:true,sounds:[{id:'p5-audio',name:'Synthetic WAV',m:audioRef,_ts:Date.now()}],modules:{body:true},dayPhotos:{[hash]:{d:'2026-09-20',m:ref,_ts:Date.now()}}};
+      const state={...(cur.state||{}),workouts:[{id:'p5-video-workout',name:'Synthetic video workout',d:'2026-09-20',start:1000,end:2000,entries:[],media:[videoRef,...formats]}],routines:[],sound:true,sounds:[{id:'p5-audio',name:'Synthetic WAV',m:audioRef,_ts:Date.now()}],modules:{body:true},dayPhotos:{[hash]:{d:'2026-09-21',m:ref,_ts:Date.now()}}};
       const saved=await fetch('/api/data',{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({state,baseRev:cur.rev,baseWid:cur.state?._wid,stamped:true})});
       if(!saved.ok)throw Error('save '+saved.status);
       const readback=await (await fetch('/api/data')).json();
       if(readback.state?.dayPhotos?.[hash]?.m?.poster?.hash!==posterHash)throw Error('saved poster reference missing');
+      const media=readback.state?.workouts?.find(w=>w.id==='p5-video-workout')?.media;
+      if(!media||media.map(m=>m.hash).join(',')!==[videoHash,...formats.map(m=>m.hash)].join(','))throw Error('saved workout fixture order changed');
       return {hash,posterHash,videoHash,videoPosterHash,audioHash,formats,size:blob.size};
     })()`);
     assert.match(fixture.hash,/^[a-f0-9]{64}$/);assert.ok(fixture.size>0);assert.match(fixture.posterHash,/^[a-f0-9]{64}$/);assert.notEqual(fixture.hash,fixture.posterHash);
     await cdp('Page.navigate',{url:runner.origin+'/?phase5fixture=1#/progress-photos'});
-    await wait("document.querySelector('.pp-tile img')?.complete && document.querySelector('.pp-tile img').naturalWidth===8",'actual progress photo poster tile did not decode');
+    const photoSelector='.pp-tile[data-day="2026-09-21"]';
+    await wait("document.querySelector("+JSON.stringify(photoSelector+" img")+")?.complete && document.querySelector("+JSON.stringify(photoSelector+" img")+").naturalWidth===8",'actual progress photo poster tile did not decode');
     assert.ok(network.some(r=>r.url===runner.origin+'/api/media/'+fixture.posterHash&&r.status===200),'gallery did not fetch private poster from Worker');
-    await evaluate("document.querySelector('.pp-tile').click()");
+    await evaluate('document.querySelector('+JSON.stringify(photoSelector)+').click()');
     await wait("document.querySelector('.mviewer-stage img')?.complete && document.querySelector('.mviewer-stage img').naturalWidth===16",'actual photo viewer did not decode');
     assert.ok(network.some(r=>r.url===runner.origin+'/api/media/'+fixture.hash&&r.status===200),'viewer did not fetch private main image from Worker');
     console.log('PHASE5_MOUNTED_BROWSER_PRIVATE_PHOTO_VIEW PASS');
