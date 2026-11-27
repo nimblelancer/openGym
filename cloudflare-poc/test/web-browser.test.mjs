@@ -49,19 +49,32 @@ test('mounted production-built SPA renders a private progress photo and full-siz
       const hash=Array.from(new Uint8Array(await crypto.subtle.digest('SHA-256',bytes)),x=>x.toString(16).padStart(2,'0')).join('');
       const put=await fetch('/api/media/'+hash,{method:'PUT',headers:{'Content-Type':'image/png','X-OpenGym-Account':reg.user.id},body:blob});
       if(put.status!==201)throw Error('upload '+put.status);
-      const ref={kind:'image',hash,mime:'image/png',size:blob.size,width:16,height:16,at:Date.now()};
+      // The actual photo ingest always supplies a JPEG/WebP poster. CustomThumb reads
+      // only that poster, while MediaView reads the main image. Keep distinct hashes.
+      const thumb=document.createElement('canvas');thumb.width=8;thumb.height=8;
+      thumb.getContext('2d').drawImage(canvas,0,0,8,8);
+      const poster=await new Promise(r=>thumb.toBlob(r,'image/jpeg',0.8));
+      if(!poster||poster.type!=='image/jpeg')throw Error('poster encode failed');
+      const posterHash=Array.from(new Uint8Array(await crypto.subtle.digest('SHA-256',await poster.arrayBuffer())),x=>x.toString(16).padStart(2,'0')).join('');
+      if(posterHash===hash)throw Error('main and poster must be distinct');
+      const putPoster=await fetch('/api/media/'+posterHash,{method:'PUT',headers:{'Content-Type':poster.type,'X-OpenGym-Account':reg.user.id},body:poster});
+      if(putPoster.status!==201)throw Error('poster upload '+putPoster.status);
+      const ref={kind:'image',hash,mime:'image/png',size:blob.size,width:16,height:16,at:Date.now(),poster:{hash:posterHash,mime:poster.type,size:poster.size,width:8,height:8}};
       const cur=await (await fetch('/api/data')).json();
       const state={...(cur.state||{}),workouts:[],routines:[],modules:{body:true},dayPhotos:{[hash]:{d:'2026-09-20',m:ref,_ts:Date.now()}}};
       const saved=await fetch('/api/data',{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({state,baseRev:cur.rev,baseWid:cur.state?._wid,stamped:true})});
       if(!saved.ok)throw Error('save '+saved.status);
-      return {hash,size:blob.size};
+      const readback=await (await fetch('/api/data')).json();
+      if(readback.state?.dayPhotos?.[hash]?.m?.poster?.hash!==posterHash)throw Error('saved poster reference missing');
+      return {hash,posterHash,size:blob.size};
     })()`);
-    assert.match(fixture.hash,/^[a-f0-9]{64}$/);assert.ok(fixture.size>0);
+    assert.match(fixture.hash,/^[a-f0-9]{64}$/);assert.ok(fixture.size>0);assert.match(fixture.posterHash,/^[a-f0-9]{64}$/);assert.notEqual(fixture.hash,fixture.posterHash);
     await cdp('Page.navigate',{url:runner.origin+'/?phase5fixture=1#/progress-photos'});
-    await wait("document.querySelector('.pp-tile img')?.complete && document.querySelector('.pp-tile img').naturalWidth===16",'actual progress photo tile did not decode');
-    assert.ok(network.some(r=>r.url===runner.origin+'/api/media/'+fixture.hash&&r.status===200),'gallery did not fetch private media from Worker');
+    await wait("document.querySelector('.pp-tile img')?.complete && document.querySelector('.pp-tile img').naturalWidth===8",'actual progress photo poster tile did not decode');
+    assert.ok(network.some(r=>r.url===runner.origin+'/api/media/'+fixture.posterHash&&r.status===200),'gallery did not fetch private poster from Worker');
     await evaluate("document.querySelector('.pp-tile').click()");
     await wait("document.querySelector('.mviewer-stage img')?.complete && document.querySelector('.mviewer-stage img').naturalWidth===16",'actual photo viewer did not decode');
+    assert.ok(network.some(r=>r.url===runner.origin+'/api/media/'+fixture.hash&&r.status===200),'viewer did not fetch private main image from Worker');
     assert.equal(await evaluate("document.cookie.includes('gymsid')"),false);
     assert.equal(await evaluate("(async()=>{await fetch('/api/logout/all',{method:'POST',headers:{'Content-Type':'application/json'},body:'{}'});return (await fetch('/api/media/"+fixture.hash+"')).status})()"),401);
     console.log('PHASE5_MOUNTED_BROWSER_PRIVATE_PHOTO PASS');
