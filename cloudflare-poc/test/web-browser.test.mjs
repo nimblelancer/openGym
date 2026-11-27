@@ -30,6 +30,14 @@ test('mounted production-built SPA renders a private progress photo and full-siz
     const evaluate=async expression=>{const r=await cdp('Runtime.evaluate',{expression,awaitPromise:true,returnByValue:true,userGesture:true});if(r.exceptionDetails)throw Error('Browser evaluation failed: '+(r.exceptionDetails.text||'exception'));return r.result.value;};
     const wait=async(expr,why)=>{for(let i=0;i<150;i++){try{if(await evaluate(expr))return;}catch{}await sleep(100);}throw Error(why);};
     await cdp('Page.enable');await cdp('Network.enable');await cdp('Network.setCacheDisabled',{cacheDisabled:true});
+    // Observe real Web Audio playback without mocking decoding or replacing audio.
+    await cdp('Page.addScriptToEvaluateOnNewDocument',{source:`window.__p5AudioStarts=[];
+      const original=AudioBufferSourceNode.prototype.start;
+      AudioBufferSourceNode.prototype.start=function(...args){
+        const result=original.apply(this,args);
+        if(this.buffer)window.__p5AudioStarts.push({duration:this.buffer.duration,channels:this.buffer.numberOfChannels,peak:Math.max(...this.buffer.getChannelData(0).slice(0,1000).map(Math.abs))});
+        return result;
+      };`});
     // Prevent page requests to non-fixture addresses. This is a closed local test.
     await cdp('Network.setBlockedURLs',{urls:['https://*','http://*']});
     // CDP blocked URL patterns cannot express an allow-list; use Fetch interception instead.
@@ -60,13 +68,40 @@ test('mounted production-built SPA renders a private progress photo and full-siz
       const putPoster=await fetch('/api/media/'+posterHash,{method:'PUT',headers:{'Content-Type':poster.type,'X-OpenGym-Account':reg.user.id},body:poster});
       if(putPoster.status!==201)throw Error('poster upload '+putPoster.status);
       const ref={kind:'image',hash,mime:'image/png',size:blob.size,width:16,height:16,at:Date.now(),poster:{hash:posterHash,mime:poster.type,size:poster.size,width:8,height:8}};
+      // Deterministic 1-second VP8 WebM, 32x32 blue frames, generated offline:
+      // ffmpeg -f lavfi -i color=c=blue:s=32x32:r=10:d=1 -c:v libvpx -b:v 30k -an fixture.webm
+      const video=new Blob([Uint8Array.from(atob('GkXfo59ChoEBQveBAULygQRC84EIQoKEd2VibUKHgQJChYECGFOAZwEAAAAAAALQEU2bdLpNu4tTq4QVSalmU6yBoU27i1OrhBZUrmtTrIHWTbuMU6uEElTDZ1OsggEjTbuMU6uEHFO7a1OsggK67AEAAAAAAABZAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAVSalmsCrXsYMPQkBNgIxMYXZmNjEuNy4xMDNXQYxMYXZmNjEuNy4xMDNEiYhAj0AAAAAAABZUrmvIrgEAAAAAAAA/14EBc8WI4e+0tqyUpbucgQAitZyDdW5kiIEAhoVWX1ZQOIOBASPjg4QF9eEA4JCwgSC6gSCagQJVsIRVuYEBElTDZ/tzc59jwIBnyJlFo4dFTkNPREVSRIeMTGF2ZjYxLjcuMTAzc3PWY8CLY8WI4e+0tqyUpbtnyKFFo4dFTkNPREVSRIeUTGF2YzYxLjE5LjEwMSBsaWJ2cHhnyKFFo4hEVVJBVElPTkSHkzAwOjAwOjAxLjAwMDAwMDAwMAAfQ7Z1QRHngQCjvYEAAIDQAgCdASogACAAAEcIhYWIhYSIAgICdaoD+AIIIQg9AP7/TRL//FhX8WFfxYV/8WFf/PzO7cX85gCjlYEAZACxAQABEBAAGAAYWC/0AAhwAKOVgQDIALEBAAEQEAAYABhYL/QACHAAo5WBASwAsQEAARAQABgAGFgv9AAIcACjlYEBkACxAQABEBAAGAAYWC/0AAhwAKOVgQH0ALEBAAEQEAAYABhYL/QACHAAo5WBAlgAsQEAARAQABgAGFgv9AAIcACjlYECvACxAQABEBAUYABhYL/QACHAAKOVgQMgALEBAAEQEAAYABhYL/QACHAAo5WBA4QAsQEAARAQABgAGFgv9AAIcAAcU7trkbuPs4EAt4r3gQHxggGj8IED'),x=>x.charCodeAt(0))],{type:'video/webm'});
+      const wav=new ArrayBuffer(44+22050*2),v=new DataView(wav);
+      const ascii=(offset,text)=>{for(let n=0;n<text.length;n++)v.setUint8(offset+n,text.charCodeAt(n));};
+      ascii(0,'RIFF');v.setUint32(4,wav.byteLength-8,true);ascii(8,'WAVEfmt ');v.setUint32(16,16,true);
+      v.setUint16(20,1,true);v.setUint16(22,1,true);v.setUint32(24,22050,true);v.setUint32(28,44100,true);v.setUint16(32,2,true);v.setUint16(34,16,true);ascii(36,'data');v.setUint32(40,44100,true);
+      for(let n=0;n<22050;n++)v.setInt16(44+2*n,Math.round(8000*Math.sin(n*2*Math.PI*440/22050)),true);
+      const audio=new Blob([wav],{type:'audio/wav'});
+      const upload=async b=>{
+        const h=Array.from(new Uint8Array(await crypto.subtle.digest('SHA-256',await b.arrayBuffer())),x=>x.toString(16).padStart(2,'0')).join('');
+        const resp=await fetch('/api/media/'+h,{method:'PUT',headers:{'Content-Type':b.type,'X-OpenGym-Account':reg.user.id},body:b});
+        if(resp.status!==201)throw Error('playback fixture upload '+resp.status);
+        return h;
+      };
+      const videoHash=await upload(video),audioHash=await upload(audio);
+      // Distinct poster for video as well, so the viewer cannot pass by using a photo thumbnail.
+      const vc=document.createElement('canvas');vc.width=12;vc.height=12;vc.getContext('2d').fillRect(0,0,12,12);
+      const vp=await new Promise(r=>vc.toBlob(r,'image/jpeg',0.8)),videoPosterHash=await upload(vp);
+      const videoRef={kind:'video',hash:videoHash,mime:video.type,size:video.size,width:32,height:32,dur:1,codec:'vp8',at:Date.now(),poster:{hash:videoPosterHash,mime:vp.type,size:vp.size,width:12,height:12}};
+      const audioRef={kind:'audio',hash:audioHash,mime:audio.type,size:audio.size,width:1,height:1,dur:1,at:Date.now()};
+      // Check the actual video range response and byte slice independently of the
+      // frontend's intentional download-to-local-store/blob playback path.
+      const vr=await fetch('/api/media/'+videoHash,{headers:{Range:'bytes=0-15'}});
+      if(vr.status!==206||vr.headers.get('content-range')!=='bytes 0-15/'+video.size)throw Error('video range headers');
+      const actual=new Uint8Array(await vr.arrayBuffer()),expected=new Uint8Array(await video.slice(0,16).arrayBuffer());
+      if(actual.length!==16||!actual.every((v,n)=>v===expected[n]))throw Error('video range bytes');
       const cur=await (await fetch('/api/data')).json();
-      const state={...(cur.state||{}),workouts:[],routines:[],modules:{body:true},dayPhotos:{[hash]:{d:'2026-09-20',m:ref,_ts:Date.now()}}};
+      const state={...(cur.state||{}),workouts:[{id:'p5-video-workout',name:'Synthetic video workout',d:'2026-09-20',start:1000,end:2000,entries:[],media:[videoRef]}],routines:[],sound:true,sounds:[{id:'p5-audio',name:'Synthetic WAV',m:audioRef,_ts:Date.now()}],modules:{body:true},dayPhotos:{[hash]:{d:'2026-09-20',m:ref,_ts:Date.now()}}};
       const saved=await fetch('/api/data',{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({state,baseRev:cur.rev,baseWid:cur.state?._wid,stamped:true})});
       if(!saved.ok)throw Error('save '+saved.status);
       const readback=await (await fetch('/api/data')).json();
       if(readback.state?.dayPhotos?.[hash]?.m?.poster?.hash!==posterHash)throw Error('saved poster reference missing');
-      return {hash,posterHash,size:blob.size};
+      return {hash,posterHash,videoHash,videoPosterHash,audioHash,size:blob.size};
     })()`);
     assert.match(fixture.hash,/^[a-f0-9]{64}$/);assert.ok(fixture.size>0);assert.match(fixture.posterHash,/^[a-f0-9]{64}$/);assert.notEqual(fixture.hash,fixture.posterHash);
     await cdp('Page.navigate',{url:runner.origin+'/?phase5fixture=1#/progress-photos'});
@@ -75,8 +110,32 @@ test('mounted production-built SPA renders a private progress photo and full-siz
     await evaluate("document.querySelector('.pp-tile').click()");
     await wait("document.querySelector('.mviewer-stage img')?.complete && document.querySelector('.mviewer-stage img').naturalWidth===16",'actual photo viewer did not decode');
     assert.ok(network.some(r=>r.url===runner.origin+'/api/media/'+fixture.hash&&r.status===200),'viewer did not fetch private main image from Worker');
+    console.log('PHASE5_MOUNTED_BROWSER_PRIVATE_PHOTO_VIEW PASS');
+    // Actual History -> WorkoutDetail -> WorkoutMedia viewer, not a synthetic video element.
+    await cdp('Page.navigate',{url:runner.origin+'/?phase5fixture=2#/history'});
+    await wait("!!document.querySelector('[data-tour=history-row]')",'actual history row did not mount');
+    await evaluate("document.querySelector('[data-tour=history-row]').click()");
+    await wait("document.querySelector('.wmedia-item img')?.complete && document.querySelector('.wmedia-item img').naturalWidth===12",'actual workout video poster did not decode');
+    assert.ok(network.some(r=>r.url===runner.origin+'/api/media/'+fixture.videoPosterHash&&r.status===200),'video poster not fetched');
+    await evaluate("document.querySelector('.wmedia-item').click()");
+    await wait("document.querySelector('.mviewer-stage video')?.videoWidth===32 && document.querySelector('.mviewer-stage video').readyState>=2",'actual workout video failed to decode');
+    await wait("document.querySelector('.mviewer-stage video').currentTime>0 && !document.querySelector('.mviewer-stage video').paused",'actual workout video did not play');
+    assert.ok(network.some(r=>r.url===runner.origin+'/api/media/'+fixture.videoHash&&r.status===200),'video not fetched in full');
+    console.log('PHASE5_MOUNTED_BROWSER_VIDEO_PLAYBACK PASS');
+    await cdp('Page.navigate',{url:runner.origin+'/?phase5fixture=3#/settings/alerts'});
+    await wait("[...document.querySelectorAll('button.lrow')].some(b=>b.querySelector('.lrow-t')?.textContent==='Sound')",'actual sound settings did not mount');
+    await evaluate("[...document.querySelectorAll('button.lrow')].find(b=>b.querySelector('.lrow-t')?.textContent==='Sound').click()");
+    await wait("!!document.querySelector('[data-own-sound=p5-audio] .own-snd-pick')",'actual custom sound row did not mount');
+    // The real App boot ensureSoundFiles fetches and verifies the server WAV into its store.
+    for(let n=0;n<150&&!network.some(r=>r.url===runner.origin+'/api/media/'+fixture.audioHash&&r.status===200);n++)await sleep(100);
+    assert.ok(network.some(r=>r.url===runner.origin+'/api/media/'+fixture.audioHash&&r.status===200),'custom sound not fetched');
+    await evaluate("document.querySelector('[data-own-sound=p5-audio] .own-snd-pick').click()");
+    await wait("window.__p5AudioStarts.some(b=>Math.abs(b.duration-1)<0.02&&b.channels===1&&b.peak>0.1)",'actual custom WAV preview did not start decoded audio');
+    assert.equal(await evaluate("document.querySelector('[data-own-sound=p5-audio] .own-snd-pick').getAttribute('aria-pressed')"),'true');
+    console.log('PHASE5_MOUNTED_BROWSER_WAV_PLAYBACK PASS');
     assert.equal(await evaluate("document.cookie.includes('gymsid')"),false);
     assert.equal(await evaluate("(async()=>{await fetch('/api/logout/all',{method:'POST',headers:{'Content-Type':'application/json'},body:'{}'});return (await fetch('/api/media/"+fixture.hash+"')).status})()"),401);
+    for(const h of [fixture.videoHash,fixture.videoPosterHash,fixture.audioHash])assert.equal(await evaluate("(async()=> (await fetch('/api/media/"+h+"')).status)()"),401);
     console.log('PHASE5_MOUNTED_BROWSER_PRIVATE_PHOTO PASS');
   }finally{
     ws?.close();
