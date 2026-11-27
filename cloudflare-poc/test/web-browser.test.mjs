@@ -84,6 +84,19 @@ test('mounted production-built SPA renders a private progress photo and full-siz
         return h;
       };
       const videoHash=await upload(video),audioHash=await upload(audio);
+      const from64=(data,type)=>new Blob([Uint8Array.from(atob(data),x=>x.charCodeAt(0))],{type});
+      // Real generated 1 s H.264 baseline MP4/MOV, 3 fps, no personal media.
+      const mp4=from64('AAAAIGZ0eXBpc29tAAACAGlzb21pc28yYXZjMW1wNDEAAAMtbW9vdgAAAGxtdmhkAAAAAAAAAAAAAAAAAAAD6AAAA+gAAQAAAQAAAAAAAAAAAAAAAAEAAAAAAAAAAAAAAAAAAAABAAAAAAAAAAAAAAAAAABAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAgAAAlh0cmFrAAAAXHRraGQAAAADAAAAAAAAAAAAAAABAAAAAAAAA+gAAAAAAAAAAAAAAAAAAAAAAAEAAAAAAAAAAAAAAAAAAAABAAAAAAAAAAAAAAAAAABAAAAAADAAAAAgAAAAAAAkZWR0cwAAABxlbHN0AAAAAAAAAAEAAAPoAAAAAAABAAAAAAHQbWRpYQAAACBtZGhkAAAAAAAAAAAAAAAAAAAwAAAAMABVxAAAAAAALWhkbHIAAAAAAAAAAHZpZGUAAAAAAAAAAAAAAABWaWRlb0hhbmRsZXIAAAABe21pbmYAAAAUdm1oZAAAAAEAAAAAAAAAAAAAACRkaW5mAAAAHGRyZWYAAAAAAAAAAQAAAAx1cmwgAAAAAQAAATtzdGJsAAAAt3N0c2QAAAAAAAAAAQAAAKdhdmMxAAAAAAAAAAEAAAAAAAAAAAAAAAAAAAAAADAAIABIAAAASAAAAAAAAAABFUxhdmM2MS4xOS4xMDEgbGlieDI2NAAAAAAAAAAAAAAAGP//AAAALWF2Y0MBQsAK/+EAFmdCwAraNbARAAADAAEAAAMABg8SJqABAARozg/IAAAAEHBhc3AAAAABAAAAAQAAABRidHJ0AAAAAAAAAXgAAAAAAAAAGHN0dHMAAAAAAAAAAQAAAAMAABAAAAAAFHN0c3MAAAAAAAAAAQAAAAEAAAAcc3RzYwAAAAAAAAABAAAAAQAAAAMAAAABAAAAIHN0c3oAAAAAAAAAAAAAAAMAAAAbAAAACgAAAAoAAAAUc3RjbwAAAAAAAAABAAADXQAAAGF1ZHRhAAAAWW1ldGEAAAAAAAAAIWhkbHIAAAAAAAAAAG1kaXJhcHBsAAAAAAAAAAAAAAAALGlsc3QAAAAkqXRvbwAAABxkYXRhAAAAAQAAAABMYXZmNjEuNy4xMDMAAAAIZnJlZQAAADdtZGF0AAAAF2WIhDoRigACGPHAAED2OAAIeUnJ1114AAAABkGaIBGjwAAAAAZBmkARo8A=','video/mp4');
+      const mov=from64('AAAAFGZ0eXBxdCAgAAACAHF0ICAAAAMEbW9vdgAAAGxtdmhkAAAAAAAAAAAAAAAAAAAD6AAAA+gAAQAAAQAAAAAAAAAAAAAAAAEAAAAAAAAAAAAAAAAAAAABAAAAAAAAAAAAAAAAAABAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAgAAAnB0cmFrAAAAXHRraGQAAAADAAAAAAAAAAAAAAABAAAAAAAAA+gAAAAAAAAAAAAAAAAAAAAAAAEAAAAAAAAAAAAAAAAAAAABAAAAAAAAAAAAAAAAAABAAAAAAEAAAAAgAAAAAAAkZWR0cwAAABxlbHN0AAAAAAAAAAEAAAPoAAAAAAABAAAAAAHobWRpYQAAACBtZGhkAAAAAAAAAAAAAAAAAAAwAAAAMAB//wAAAAAALWhkbHIAAAAAbWhscnZpZGUAAAAAAAAAAAAAAAAMVmlkZW9IYW5kbGVyAAABk21pbmYAAAAUdm1oZAAAAAEAAAAAAAAAAAAAACxoZGxyAAAAAGRobHJ1cmwgAAAAAAAAAAAAAAAAC0RhdGFIYW5kbGVyAAAAJGRpbmYAAAAcZHJlZgAAAAAAAAABAAAADHVybCAAAAABAAABJ3N0YmwAAACjc3RzZAAAAAAAAAABAAAAk2F2YzEAAAAAAAAAAQAAAABGRk1QAAACAAAAAgAAQAAgAEgAAABIAAAAAAAAAAEVTGF2YzYxLjE5LjEwMSBsaWJ4MjY0AAAAAAAAAAAAAAAY//8AAAAtYXZjQwFCwAr/4QAWZ0LACtoRbARAAAADAEAAAAMBg8SJqAEABGjOD8gAAAAQcGFzcAAAAAEAAAABAAAAGHN0dHMAAAAAAAAAAQAAAAMAABAAAAAAFHN0c3MAAAAAAAAAAQAAAAEAAAAcc3RzYwAAAAAAAAABAAAAAQAAAAMAAAABAAAAIHN0c3oAAAAAAAAAAAAAAAMAAAAdAAAACgAAAAoAAAAUc3RjbwAAAAAAAAABAAADKAAAACB1ZHRhAAAAGKlzd3IADFXETGF2ZjYxLjcuMTAzAAAACHdpZGUAAAA5bWRhdAAAABlliIQ6EYoAAhjxwABA9jgACHlJycnXXXXgAAAABkGaIBGhMAAAAAZBmkARoTA=','video/quicktime');
+      const gif=from64('R0lGODlhBgAEAIEAAP8AAAAAAAAAAAAAACH/C05FVFNDQVBFMi4wAwEAAAAh+QQAHgAAACwAAAAABgAEAAAICwABCBxIsKDBgQEBACH5BAEeAAEALAAAAAAGAAQAgQAA/wAAAAAAAAAAAAgLAAEIHEiwoMGBAQEAOw==','image/gif');
+      const wc=document.createElement('canvas');wc.width=20;wc.height=10;wc.getContext('2d').fillRect(0,0,20,10);
+      const webp=await new Promise(r=>wc.toBlob(r,'image/webp',0.8));
+      if(!webp||webp.type!=='image/webp')throw Error('WebP encode failed');
+      const formats=[];
+      for(const [file,kind,width,height] of [[mp4,'video',48,32],[mov,'video',64,32],[webp,'image',20,10],[gif,'gif',6,4]]){
+        const h=await upload(file);
+        formats.push({kind,hash:h,mime:file.type,size:file.size,width,height,at:Date.now(),...(kind==='video'?{dur:1}:{})});
+      }
       // Distinct poster for video as well, so the viewer cannot pass by using a photo thumbnail.
       const vc=document.createElement('canvas');vc.width=12;vc.height=12;vc.getContext('2d').fillRect(0,0,12,12);
       const vp=await new Promise(r=>vc.toBlob(r,'image/jpeg',0.8)),videoPosterHash=await upload(vp);
@@ -95,13 +108,14 @@ test('mounted production-built SPA renders a private progress photo and full-siz
       if(vr.status!==206||vr.headers.get('content-range')!=='bytes 0-15/'+video.size)throw Error('video range headers');
       const actual=new Uint8Array(await vr.arrayBuffer()),expected=new Uint8Array(await video.slice(0,16).arrayBuffer());
       if(actual.length!==16||!actual.every((v,n)=>v===expected[n]))throw Error('video range bytes');
+      for(const f of formats)f.poster=videoRef.poster;
       const cur=await (await fetch('/api/data')).json();
-      const state={...(cur.state||{}),workouts:[{id:'p5-video-workout',name:'Synthetic video workout',d:'2026-09-20',start:1000,end:2000,entries:[],media:[videoRef]}],routines:[],sound:true,sounds:[{id:'p5-audio',name:'Synthetic WAV',m:audioRef,_ts:Date.now()}],modules:{body:true},dayPhotos:{[hash]:{d:'2026-09-20',m:ref,_ts:Date.now()}}};
+      const state={...(cur.state||{}),workouts:[{id:'p5-video-workout',name:'Synthetic video workout',d:'2026-09-20',start:1000,end:2000,entries:[],media:[videoRef,...formats]}],routines:[],sound:true,sounds:[{id:'p5-audio',name:'Synthetic WAV',m:audioRef,_ts:Date.now()}],modules:{body:true},dayPhotos:{[hash]:{d:'2026-09-20',m:ref,_ts:Date.now()}}};
       const saved=await fetch('/api/data',{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({state,baseRev:cur.rev,baseWid:cur.state?._wid,stamped:true})});
       if(!saved.ok)throw Error('save '+saved.status);
       const readback=await (await fetch('/api/data')).json();
       if(readback.state?.dayPhotos?.[hash]?.m?.poster?.hash!==posterHash)throw Error('saved poster reference missing');
-      return {hash,posterHash,videoHash,videoPosterHash,audioHash,size:blob.size};
+      return {hash,posterHash,videoHash,videoPosterHash,audioHash,formats,size:blob.size};
     })()`);
     assert.match(fixture.hash,/^[a-f0-9]{64}$/);assert.ok(fixture.size>0);assert.match(fixture.posterHash,/^[a-f0-9]{64}$/);assert.notEqual(fixture.hash,fixture.posterHash);
     await cdp('Page.navigate',{url:runner.origin+'/?phase5fixture=1#/progress-photos'});
@@ -122,6 +136,20 @@ test('mounted production-built SPA renders a private progress photo and full-siz
     await wait("document.querySelector('.mviewer-stage video').currentTime>0 && !document.querySelector('.mviewer-stage video').paused",'actual workout video did not play');
     assert.ok(network.some(r=>r.url===runner.origin+'/api/media/'+fixture.videoHash&&r.status===200),'video not fetched in full');
     console.log('PHASE5_MOUNTED_BROWSER_VIDEO_PLAYBACK PASS');
+    for(const f of fixture.formats){
+      await evaluate("document.querySelector('.mviewer-nav button[aria-label=Next]').click()");
+      const selector=f.kind==='video'?'.mviewer-stage video':'.mviewer-stage img';
+      const expr=f.kind==='video'? "document.querySelector('"+selector+"')?.videoWidth==="+f.width+" && document.querySelector('"+selector+"').readyState>=2 && document.querySelector('"+selector+"').currentTime>0 && !document.querySelector('"+selector+"').paused" : "document.querySelector('"+selector+"')?.complete && document.querySelector('"+selector+"').naturalWidth==="+f.width;
+      await wait(expr,'actual mounted '+f.mime+' decode/playback failed');
+      assert.ok(network.some(r=>r.url===runner.origin+'/api/media/'+f.hash&&r.status===200),'missing actual '+f.mime+' download');
+      if(f.kind==='gif'){
+        await evaluate("document.querySelector('.mviewer-stage .exmedia').click()");
+        await wait("document.querySelector('.mviewer-stage img')?.naturalWidth===12",'GIF poster pause did not render');
+        await evaluate("document.querySelector('.mviewer-stage .exmedia').click()");
+        await wait("document.querySelector('.mviewer-stage img')?.naturalWidth===6",'GIF did not resume main image');
+      }
+      console.log('PHASE5_MOUNTED_FORMAT '+f.mime+' PASS');
+    }
     await cdp('Page.navigate',{url:runner.origin+'/?phase5fixture=3#/settings/alerts'});
     await wait("[...document.querySelectorAll('button.lrow')].some(b=>b.querySelector('.lrow-t')?.textContent==='Sound')",'actual sound settings did not mount');
     await evaluate("[...document.querySelectorAll('button.lrow')].find(b=>b.querySelector('.lrow-t')?.textContent==='Sound').click()");
@@ -135,7 +163,7 @@ test('mounted production-built SPA renders a private progress photo and full-siz
     console.log('PHASE5_MOUNTED_BROWSER_WAV_PLAYBACK PASS');
     assert.equal(await evaluate("document.cookie.includes('gymsid')"),false);
     assert.equal(await evaluate("(async()=>{await fetch('/api/logout/all',{method:'POST',headers:{'Content-Type':'application/json'},body:'{}'});return (await fetch('/api/media/"+fixture.hash+"')).status})()"),401);
-    for(const h of [fixture.videoHash,fixture.videoPosterHash,fixture.audioHash])assert.equal(await evaluate("(async()=> (await fetch('/api/media/"+h+"')).status)()"),401);
+    for(const h of [fixture.videoHash,fixture.videoPosterHash,fixture.audioHash,...fixture.formats.map(f=>f.hash)])assert.equal(await evaluate("(async()=> (await fetch('/api/media/"+h+"')).status)()"),401);
     console.log('PHASE5_MOUNTED_BROWSER_PRIVATE_PHOTO PASS');
   }finally{
     ws?.close();

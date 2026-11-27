@@ -11,6 +11,7 @@ import {createMediaSync} from './media-sync.js'
 import {createMediaStore,memoryBackend} from './media-store.js'
 import {api,apiBlob,apiUpload,setRemoteAuth} from './api.js'
 import { _resetMediaOwed } from './media-owed.js'
+import {mp4} from './media-samples.test-util.js'
 it('actual media-sync uploads, retries, deduplicates, downloads and refuses stale owner against local R2',async()=>{
   const AUTH_SECRET=randomBytes(32).toString('hex'),SETUP_CODE=randomBytes(32).toString('hex')
   const runner=await localRunner('wrangler.web-media.jsonc',{cwd:resolve('../cloudflare-poc'),health:'/api/health',privateLogs:true,syntheticDiagnostics:true,vars:origin=>({AUTH_SECRET,SETUP_CODE,API_ORIGIN:origin,RP_ID:'localhost',P5_MEDIA:'1'})})
@@ -140,5 +141,34 @@ it('actual media-sync uploads, retries, deduplicates, downloads and refuses stal
     const mobile=make(createMediaStore(memoryBackend()))
     expect(await mobile.fetchToStore(hash,ref,{force:true})).toBe(true)
     console.log('PHASE5_ACTUAL_FRONTEND_MEDIA_SYNC PASS')
+    // Existing media from the old 100 MiB video configuration: structural
+    // MP4 fixture with a free box, not a browser decode claim.
+    const small=mp4().file,large=Buffer.alloc(8*1024*1024+1)
+    large.set(small);large.writeUInt32BE(large.length-small.length,small.length);large.write('free',small.length+4)
+    const largeHash=sha(large),largeBlob=new Blob([new Uint8Array(large)],{type:'video/mp4'})
+    const largeRef={kind:'video',hash:largeHash,mime:'video/mp4',size:large.length,width:1920,height:1080,dur:5,at:1}
+    const latest=await api('/api/data')
+    st.S={...latest.state,customEx:[...latest.state.customEx,{id:'oversized-legacy',media:largeRef}]}
+    await api('/api/data',{method:'PUT',body:JSON.stringify({state:st.S,baseRev:latest.rev,baseWid:latest.state._wid,stamped:true})})
+    await local.put(largeHash,largeBlob,{mime:'video/mp4',pending:true})
+    const beforeLarge=uploads
+    await make(local).syncMedia({force:true,retryRejected:true})
+    const kept=await local.get(largeHash)
+    expect(kept).toMatchObject({pending:true,rejected:true,size:large.length})
+    expect(sha(new Uint8Array(await kept.blob.arrayBuffer()))).toBe(largeHash)
+    expect(uploads).toBe(beforeLarge)
+    expect((await api('/api/data')).state.customEx.find(x=>x.id==='oversized-legacy').media.hash).toBe(largeHash)
+    expect((await api('/api/media/missing',{method:'POST',body:JSON.stringify({hashes:[largeHash]})})).missing).toEqual([largeHash])
+    console.log('PHASE5_OVERSIZED_PENDING_MEDIA_PRESERVED PASS')
+    // Diagnostic (not an acceptance PASS): a file previously acknowledged by a
+    // different server is not automatically marked pending when now refused.
+    // Do not delete it; the frozen client cache eviction and sign-out use pending.
+    await second.put(largeHash,largeBlob,{mime:'video/mp4',pending:false})
+    await make(second).syncMedia({force:true,retryRejected:true})
+    const legacy=await second.get(largeHash)
+    expect(legacy).toMatchObject({pending:false,rejected:true})
+    expect(sha(new Uint8Array(await legacy.blob.arrayBuffer()))).toBe(largeHash)
+    expect(uploads).toBe(beforeLarge)
+    console.log('PHASE5_LEGACY_ACK_PENDING_GAP RISK_REPRODUCED')
   }finally{setRemoteAuth('',null);vi.unstubAllGlobals();_resetMediaOwed();await runner.cleanup()}
 },180000)

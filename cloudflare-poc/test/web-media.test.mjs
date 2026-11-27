@@ -137,8 +137,37 @@ test('GC observations survive restart and long-offline references; authorized de
     const all=await l.sweep(uid,()=>live);
     assert.equal(all.body.pastGrace,10);assert.equal(all.body.removed,0);assert.equal(objects.size,10);
     console.log('PHASE5_LONG_OFFLINE_RETENTION PASS');
-    fail=false;objects.clear(); // isolate the explicitly authorized account-deletion fixture below
-    objects.set(key,{key,size:image.length,uploaded:new Date(now),etag:'two'});
+    fail=false;objects.clear(); // isolate the next synthetic inventory
+    // Model full retained-byte inventory using bounded metadata, not 200 MiB of allocations.
+    const meta=(h,size)=>({key:'private/v1/'+uid+'/'+h,size,uploaded:new Date(now),etag:h,httpMetadata:{contentType:'image/png'},customMetadata:{sha256:h}});
+    objects.set(key,meta(hash,image.length));
+    for(let n=0;n<100;n++){const o=meta(sha('retained-'+n),2*MB-(n===99?image.length:0));objects.set(o.key,o);}
+    let writes=0;bucket.put=async()=>{writes++;throw Error('unexpected write');};
+    const full=await l.sweep(uid,()=>live);
+    assert.equal(full.body.usage.bytes,200*MB);assert.equal(full.body.retainedBytes,200*MB);assert.equal(full.body.removed,0);
+    assert.equal((await l.sweep(uid,()=>false)).status,401);
+    const newBytes=Buffer.concat([image,Buffer.from([1])]);
+    const denied=await handleMedia(upload(newBytes),uid,bucket,()=>live);
+    assert.equal(denied.status,413);assert.equal((await denied.json()).code,'media-quota');
+    assert.equal(writes,0);assert.equal(objects.size,101);
+    const dedup=await handleMedia(upload(),uid,bucket,()=>live);
+    assert.equal(dedup.status,200);assert.equal((await dedup.json()).existed,true);
+    assert.equal((await handleMedia(new Request('http://localhost'+path,{method:'HEAD'}),uid,bucket,()=>live)).status,200);
+    // Re-reference is safe at quota, but it does not pretend to free bytes.
+    state={kind:'ok',state:{customEx:[{media:{hash}}]}};
+    repo.tx(()=>l.noteState(uid,state.state));assert.equal((await l.sweep(uid,()=>live)).body.usage.bytes,200*MB);
+    console.log('PHASE5_RETAINED_BYTE_QUOTA PASS');
+    // Test the independent 500-object ceiling with small synthetic metadata.
+    objects.clear();objects.set(key,meta(hash,image.length));
+    for(let n=0;n<499;n++){const o=meta(sha('count-'+n),1);objects.set(o.key,o);}
+    state={kind:'ok',state:{workouts:[]}};
+    const atCount=await l.sweep(uid,()=>live);
+    assert.equal(atCount.body.usage.count,500);assert.equal(atCount.body.retained,500);
+    const countDenied=await handleMedia(upload(newBytes),uid,bucket,()=>live);
+    assert.equal(countDenied.status,413);assert.equal((await countDenied.json()).code,'media-quota');
+    assert.equal((await handleMedia(upload(),uid,bucket,()=>live)).status,200);
+    assert.equal(writes,0);assert.equal(objects.size,500);
+    console.log('PHASE5_RETAINED_OBJECT_QUOTA PASS');
     // Durable intent is written before R2 deletion. A failed cleanup cannot finalize the account.
     repo.tx(()=>l.begin(uid));assert.equal(repo.user(uid).disabled,1);
     fail=true;let finalized=0;await assert.rejects(l.finish(uid,()=>{finalized++}),/injected/);
@@ -148,15 +177,36 @@ test('GC observations survive restart and long-offline references; authorized de
     // or cross-owner cleanup, even when recovery needs several requests.
     const foreign='private/v1/otherowner123456/'+hash;
     objects.set(foreign,{key:foreign,size:1,uploaded:new Date(now),etag:'foreign'});
-    for(let n=0;n<DELETE_BATCH+2;n++){const k='private/v1/'+uid+'/'+sha('batch-'+n);objects.set(k,{key:k,size:1,uploaded:new Date(now),etag:'batch-'+n});}
     const originalDelete=bucket.delete;
+    await assert.rejects(l.finish('otherowner123456',()=>{}),/missing deletion intent/);
     bucket.delete=async keys=>{objects.delete([keys].flat()[0]);throw Error('partial batch failure');};
     const finalize=id=>{repo.q('DELETE FROM auth_users WHERE id=?',id);finalized++;};
     await assert.rejects(l.finish(uid,finalize),/partial batch failure/);
     assert.equal(l.pending(),uid);assert.equal(finalized,0);assert.equal(repo.user(uid).disabled,1);
-    bucket.delete=originalDelete;l=make();
-    assert.equal(await l.finish(uid,finalize),false);assert.equal(finalized,0);assert.equal(l.pending(),uid);
-    assert.equal(await l.finish(uid,finalize),true);
+    // A backend may report success but leave part of a batch behind.
+    l=make();bucket.delete=async keys=>{objects.delete(keys[0]);};
+    await assert.rejects(l.finish(uid,finalize),/account media delete not verified/);
+    assert.equal(l.pending(),uid);assert.equal(finalized,0);
+    let batches=0,partialFailures=0;
+    bucket.delete=async keys=>{
+      assert.ok(keys.length>0&&keys.length<=DELETE_BATCH);
+      assert.ok(keys.every(k=>k.startsWith('private/v1/'+uid+'/')));
+      batches++;
+      if(batches%5===0){objects.delete(keys[0]);partialFailures++;throw Error('repeated partial batch');}
+      await originalDelete(keys);
+    };
+    while((await inventory(bucket,uid)).usage.count){
+      l=make();assert.equal(l.pending(),uid);assert.equal(repo.user(uid).disabled,1);
+      // Fail the final SQLite transaction too, after all objects are absent.
+      const failFinal=id=>{repo.q('DELETE FROM auth_users WHERE id=?',id);throw Error('finalize rollback');};
+      try{assert.equal(await l.finish(uid,failFinal),false);}
+      catch(e){assert.match(e.message,/repeated partial batch|finalize rollback/);}
+      assert.equal(finalized,0);assert.equal(l.pending(),uid);assert.equal(repo.user(uid).disabled,1);
+      assert.ok(batches<100,'bounded recovery must make progress');
+    }
+    assert.ok(partialFailures>=1);assert.ok(batches>=Math.ceil(498/DELETE_BATCH));
+    l=make();assert.equal(await l.finish(uid,finalize),true);
+    console.log('PHASE5_MAX_INVENTORY_RECOVERY PASS');
     assert.equal(l.pending(),null);assert.equal(finalized,1);assert.equal(objects.size,1);assert.ok(objects.has(foreign));assert.equal(repo.user(uid),undefined);
     console.log('PHASE5_PARTIAL_BATCH_DELETE_RECOVERY PASS');
     console.log('PHASE5_LIFECYCLE_FAULT_RECOVERY PASS');
@@ -173,7 +223,7 @@ async function findAuthDb(root){
 }
 test('actual local Worker: SPA, private R2, authenticated media contract and restart',{timeout:180000},async()=>{
   const AUTH_SECRET=randomBytes(32).toString('hex'),SETUP_CODE=randomBytes(32).toString('hex');
-  const runner=await localRunner('wrangler.web-media.jsonc',{health:'/api/health',privateLogs:true,syntheticDiagnostics:true,vars:origin=>({AUTH_SECRET,SETUP_CODE,API_ORIGIN:origin,RP_ID:'localhost',P5_MEDIA:'1'})});
+  const runner=await localRunner('wrangler.web-media.jsonc',{health:'/api/health',allowUnavailable:true,privateLogs:true,syntheticDiagnostics:true,vars:origin=>({AUTH_SECRET,SETUP_CODE,API_ORIGIN:origin,RP_ID:'localhost',P5_MEDIA:'1'})});
   let cookie='',bearer='',uid='',count=0;
   const dev=authenticator({rp:'localhost',origin:runner.origin});
   const raw=async(p,method='GET',body,headers={})=>fetch(runner.base+p,{method,headers:{...(!['GET','HEAD','OPTIONS'].includes(method)?{origin:runner.origin}:{}),...headers},...(body===undefined?{}:{body}),signal:AbortSignal.timeout(30000)});
@@ -295,9 +345,9 @@ test('actual local Worker: SPA, private R2, authenticated media contract and res
     const nextToken=(await data(await post('/api/pair/redeem',{code:nextPair.code}))).token;
     const deleting={authorization:'Bearer '+nextToken,origin:'capacitor://localhost'};
     // Fill the real local R2 namespace with enough distinct valid WAV files for
-    // multiple bounded recovery requests (35 total including the existing two).
-    for(let n=0;n<33;n++){const b=wav(2206+n),h=sha(b);await data(await raw('/api/media/'+h,'PUT',b,{'content-type':'audio/wav',...auth(),'x-opengym-account':uid}),201);}
-    assert.equal((await data(await post('/api/media/missing',{hashes:[hash,audioHash]},auth()))).usage.count,35);
+    // multiple bounded recovery requests (65 total including the existing two).
+    for(let n=0;n<63;n++){const b=wav(2206+n),h=sha(b);await data(await raw('/api/media/'+h,'PUT',b,{'content-type':'audio/wav',...auth(),'x-opengym-account':uid}),201);}
+    assert.equal((await data(await post('/api/media/missing',{hashes:[hash,audioHash]},auth()))).usage.count,65);
     // Interrupt the final SQLite transaction after R2 cleanup. The intent and disabled
     // owner must survive restart; health recovery finishes only the authorized deletion.
     await runner.stop();const dbPath=await findAuthDb(runner.dir);assert.ok(dbPath);
@@ -306,9 +356,16 @@ test('actual local Worker: SPA, private R2, authenticated media contract and res
     await runner.start();
     assert.equal((await post('/api/account/delete',{name:'Synthetic Owner'},deleting)).status,503);
     assert.equal((await raw(path,'GET',undefined,deleting)).status,503);
-    // Second bounded batch still cannot acknowledge deletion; the final batch
-    // reaches the injected transaction failure. All responses remain unavailable.
-    for(let n=0;n<2;n++)assert.equal((await raw('/api/health')).status,503);
+    // Interrupt after another bounded recovery request, with deletion intent
+    // still durable. Startup health may process another batch but cannot finalize.
+    assert.equal((await raw('/api/health')).status,503);
+    await runner.stop();db=new DatabaseSync(dbPath,{timeout:5000});
+    try{assert.equal(db.prepare('SELECT uid FROM media_delete_intent').get().uid,uid);
+      assert.equal(db.prepare('SELECT disabled FROM auth_users WHERE id=?').get(uid).disabled,1);
+      assert.equal(db.prepare('SELECT count(*) AS n FROM profile_state').get().n,1);
+    }finally{db.close();}
+    await runner.start();
+    for(let n=0;n<5;n++)assert.equal((await raw('/api/health')).status,503);
     assert.equal((await raw('/api/me','GET',undefined,deleting)).status,503);
     await runner.stop();db=new DatabaseSync(dbPath,{timeout:5000});
     try{
@@ -321,6 +378,7 @@ test('actual local Worker: SPA, private R2, authenticated media contract and res
     assert.equal((await raw(path,'GET',undefined,deleting)).status,401);
     await runner.stop();db=new DatabaseSync(dbPath,{timeout:5000});
     try{for(const table of ['media_delete_intent','media_gc','auth_users','auth_creds','profile_state','profile_chunks'])assert.equal(db.prepare('SELECT count(*) AS n FROM '+table).get().n,0,table);}finally{db.close();}
+    console.log('PHASE5_RESTART_MULTIBATCH_LOCAL_R2 PASS');
     console.log('PHASE5_LARGE_LOCAL_R2_DELETE_RECOVERY PASS');
     console.log('PHASE5_RESET_GRACE_ACCOUNT_DELETE PASS');
   }finally{await runner.cleanup();}
