@@ -1,7 +1,8 @@
 import {test} from 'node:test';
 import assert from 'node:assert/strict';
-import {createHash,randomBytes} from 'node:crypto';
-import {readFile,readdir} from 'node:fs/promises';
+import {createHash,randomBytes,createCipheriv,createDecipheriv} from 'node:crypto';
+import {readFile,readdir,mkdtemp,writeFile,rm} from 'node:fs/promises';
+import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 import {request} from 'node:http';
 import {setTimeout as sleep} from 'node:timers/promises';
@@ -403,4 +404,125 @@ test('read-only migration audit verifies known bytes and fails closed on missing
   await assert.rejects(auditMigrationMedia({...args,snapshots:[{owner:'another',state:{}}]}),/foreign snapshot/);
   let checks=0;await assert.rejects(auditMigrationMedia({...args,isCurrent:async()=>++checks===1}),/snapshot or owner changed/);
   console.log('PHASE5_MIGRATION_PREFLIGHT_INTEGRITY PASS');
+});
+
+
+// A disposable encrypted backup/restore qualification, not an export format,
+// migration CLI or production cutover. No credentials or backup bytes are logged.
+test('verified encrypted disk fixture restores known state/media to an independent local Worker',{timeout:180000},async()=>{
+  const mk=async()=>{
+    const AUTH_SECRET=randomBytes(32).toString('hex'),SETUP_CODE=randomBytes(32).toString('hex');
+    const runner=await localRunner('wrangler.web-media.jsonc',{health:'/api/health',privateLogs:true,syntheticDiagnostics:true,vars:origin=>({AUTH_SECRET,SETUP_CODE,API_ORIGIN:origin,RP_ID:'localhost',P5_MEDIA:'1'})});
+    let cookie='',owner=null;
+    const raw=(p,method='GET',body,headers={})=>fetch(runner.base+p,{method,redirect:'error',headers:{origin:runner.origin,...(cookie?{cookie}:{}),...headers},...(body===undefined?{}:{body}),signal:AbortSignal.timeout(15000)});
+    const json=async(res,status=200)=>{assert.equal(res.status,status);return res.json();};
+    const post=(p,b)=>raw(p,'POST',JSON.stringify(b),{'content-type':'application/json'});
+    function rawData(){return raw('/api/data');}
+    const state=async()=>json(await rawData());
+    const register=async()=>{
+      const dev=authenticator({rp:'localhost',origin:runner.origin});
+      const o=await json(await post('/api/register/options',{name:'Synthetic backup owner',code:SETUP_CODE}));
+      const res=await post('/api/register/verify',{cid:o.cid,credential:dev.register(o.options.challenge)});
+      owner=(await json(res)).user.id;cookie=res.headers.getSetCookie()[0].split(';')[0];return owner;
+    };
+    const put=(h,b,m,want=owner)=>raw('/api/media/'+h,'PUT',b,{'content-type':m,'x-opengym-account':want});
+    const save=async(doc,base)=>json(await raw('/api/data','PUT',JSON.stringify({state:doc,baseRev:base.rev,baseWid:base.state?._wid,stamped:true}),{'content-type':'application/json'}));
+    const current=async(want,rev,wid)=>{
+      if(want!==owner)return false;
+      const me=await raw('/api/me');if(!me.ok||(await me.json()).user.id!==want)return false;
+      const d=await state();return d.rev===rev&&d.state?._wid===wid;
+    };
+    // The actual authenticated response supplies MIME and bytes. Never relabel
+    // a server response using the expected type. Refuse unexpected status/size.
+    const read=async(h,want)=>{
+      const res=await raw('/api/media/'+h,'GET',undefined,{'x-opengym-account':want});
+      if(res.status===404){await res.arrayBuffer();return null;}
+      if(res.status!==200){await res.arrayBuffer();throw Error('destination read refused');}
+      const length=Number(res.headers.get('content-length'));
+      if(!Number.isSafeInteger(length)||length<1||length>8*MB)throw Error('destination size invalid');
+      const blob=await res.blob();if(blob.size!==length)throw Error('destination truncated');
+      return blob;
+    };
+    return {runner,register,raw,json,state,put,save,current,read};
+  };
+  const source=await mk(),target=await mk(),backupDir=await mkdtemp(join(tmpdir(),'opengym-p5-backup-'));
+  const key=randomBytes(32),aad=Buffer.from('opengym-synthetic-backup-fixture-v1'),archivePath=join(backupDir,'snapshot.enc');
+  const seal=plain=>{
+    const nonce=randomBytes(12),cipher=createCipheriv('aes-256-gcm',key,nonce);cipher.setAAD(aad);
+    const body=Buffer.concat([cipher.update(plain),cipher.final()]);return Buffer.concat([nonce,cipher.getAuthTag(),body]);
+  };
+  const open=(bytes,k=key)=>{
+    if(bytes.length<29||bytes.length>16*MB)throw Error('backup fixture size');
+    const d=createDecipheriv('aes-256-gcm',k,bytes.subarray(0,12));d.setAAD(aad);d.setAuthTag(bytes.subarray(12,28));
+    return JSON.parse(Buffer.concat([d.update(bytes.subarray(28)),d.final()]).toString('utf8'));
+  };
+  const audio=wav(2205),ah=sha(audio);
+  const media={kind:'image',hash,mime:'image/png',size:image.length,width:1,height:1,at:1};
+  const sound={kind:'audio',hash:ah,mime:'audio/wav',size:audio.length,width:1,height:1,dur:0.1,at:1};
+  try{
+    await source.runner.start();const sourceOwner=await source.register();
+    const original={customEx:[{id:'backup-photo',media}],workouts:[{id:'backup-workout',d:'2026-09-20',start:1000,end:2000,entries:[]}],routines:[],sounds:[{id:'backup-audio',name:'Synthetic WAV',m:sound,_ts:1}]};
+    await source.json(await source.put(hash,image,media.mime),201);
+    await source.json(await source.put(ah,audio,sound.mime),201);
+    await source.save(original,await source.state());const exported=await source.state();
+    assert.ok(await source.current(sourceOwner,exported.rev,exported.state._wid));
+    const rows=[];
+    for(const ref of [media,sound]){
+      const blob=await source.read(ref.hash,sourceOwner);assert.ok(blob);
+      const b=Buffer.from(await blob.arrayBuffer());assert.equal(sha(b),ref.hash);assert.equal(blob.type,ref.mime);assert.equal(b.length,ref.size);
+      rows.push({hash:ref.hash,mime:blob.type,size:b.length,bytes:b.toString('base64')});
+    }
+    assert.ok(await source.current(sourceOwner,exported.rev,exported.state._wid));
+    const plain=Buffer.from(JSON.stringify({version:1,sourceOwner,revision:exported.rev,state:exported.state,files:rows}));
+    const stateDigest=sha(JSON.stringify(exported.state));
+    await writeFile(archivePath,seal(plain),{mode:0o600,flag:'wx'});
+    await source.runner.stop(); // source storage remains intact, never erased
+    const encrypted=await readFile(archivePath);
+    const damaged=Buffer.from(encrypted);damaged[damaged.length-1]^=1;
+    assert.throws(()=>open(damaged));assert.throws(()=>open(encrypted,randomBytes(32)));
+    const restored=open(encrypted);
+    assert.equal(restored.version,1);assert.equal(restored.sourceOwner,sourceOwner);assert.equal(restored.revision,exported.rev);assert.equal(sha(JSON.stringify(restored.state)),stateDigest);
+    const copies=new Map();
+    for(const row of restored.files){const b=Buffer.from(row.bytes,'base64');assert.equal(b.length,row.size);assert.equal(sha(b),row.hash);copies.set(row.hash,new Blob([b],{type:row.mime}));}
+    // Explicit source -> fresh destination owner mapping in this synthetic test.
+    await target.runner.start();const destinationOwner=await target.register();assert.notEqual(destinationOwner,sourceOwner);
+    const empty=await target.state();assert.equal(empty.rev,0);
+    const snapshot={owner:destinationOwner,state:restored.state};
+    const makeAudit=base=>({owner:destinationOwner,snapshots:[snapshot],readLocal:async()=>null,readBackup:async h=>copies.get(h)||null,readDestination:h=>target.read(h,destinationOwner),isCurrent:owner=>target.current(owner,base.rev,base.state?._wid)});
+    const before=await auditMigrationMedia(makeAudit(empty));
+    assert.equal(before.knownMediaVerified,false);assert.equal(before.cutoverAuthorized,false);
+    assert.ok(before.records.every(r=>r.backup==='verified'&&r.destination==='missing'));
+    assert.deepEqual(before.issues,['destination-not-verified']);
+    assert.equal((await target.put(hash,image,media.mime,sourceOwner)).status,409);
+    await assert.rejects(target.read(hash,sourceOwner),/destination read refused/);
+    // Only copy verified blobs; simulate interruption after the first write.
+    await target.json(await target.put(hash,Buffer.from(await copies.get(hash).arrayBuffer()),media.mime),201);
+    const partial=await auditMigrationMedia(makeAudit(empty));
+    assert.equal(partial.knownMediaVerified,false);
+    assert.equal(partial.records.find(r=>r.hash===hash).destination,'verified');
+    assert.equal(partial.records.find(r=>r.hash===ah).destination,'missing');
+    assert.equal((await target.state()).rev,0);
+    await target.runner.stop();await target.runner.start();
+    const resumed=await target.json(await target.put(hash,Buffer.from(await copies.get(hash).arrayBuffer()),media.mime));
+    assert.equal(resumed.existed,true);
+    await target.json(await target.put(ah,Buffer.from(await copies.get(ah).arrayBuffer()),sound.mime),201);
+    const allBytes=await auditMigrationMedia(makeAudit(empty));assert.equal(allBytes.knownMediaVerified,true);assert.equal(allBytes.cutoverAuthorized,false);
+    // Only then publish the restored state to the disposable destination.
+    // The destination allocates its own storage revision/write identity.
+    const doc=structuredClone(restored.state);delete doc._rev;delete doc._wid;
+    await target.save(doc,empty);const committed=await target.state();
+    for(const k of ['customEx','workouts','routines','sounds'])assert.deepEqual(committed.state[k],restored.state[k],k);
+    await assert.rejects(auditMigrationMedia(makeAudit(empty)),/snapshot or owner changed/);
+    const audit=await auditMigrationMedia(makeAudit(committed));assert.equal(audit.knownMediaVerified,true);assert.equal(audit.cutoverAuthorized,false);
+    assert.ok(audit.records.every(r=>r.backup==='verified'&&r.destination==='verified'));
+    await target.runner.stop();await target.runner.start();
+    assert.deepEqual(await target.state(),committed);
+    assert.equal((await auditMigrationMedia(makeAudit(committed))).knownMediaVerified,true);
+    await source.runner.start();assert.deepEqual(await source.state(),exported);
+    assert.equal(sha(Buffer.from(await (await source.read(hash,sourceOwner)).arrayBuffer())),hash);
+    assert.equal(sha(Buffer.from(await (await source.read(ah,sourceOwner)).arrayBuffer())),ah);
+    assert.deepEqual(await readFile(archivePath),encrypted);
+    console.log('PHASE5_ENCRYPTED_DISK_BACKUP_RESTORE PASS');
+    console.log('PHASE5_DESTINATION_OWNER_REVISION_PREFLIGHT PASS');
+  }finally{key.fill(0);await source.runner.cleanup();await target.runner.cleanup();await rm(backupDir,{recursive:true,force:true});}
 });
