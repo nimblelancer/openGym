@@ -1,13 +1,13 @@
 // Real built React SPA, Chromium, local Worker + R2. Synthetic credentials and pixels only.
 import {test} from 'node:test';
 import assert from 'node:assert/strict';
-import {spawn,execFileSync} from 'node:child_process';
+import {spawn} from 'node:child_process';
 import {once} from 'node:events';
 import {mkdtemp,readFile,rm} from 'node:fs/promises';
 import {join} from 'node:path';
 import {tmpdir} from 'node:os';
 import {setTimeout as sleep} from 'node:timers/promises';
-import {randomBytes} from 'node:crypto';
+import {randomBytes,createHash} from 'node:crypto';
 import {localRunner} from './local-runner.mjs';
 
 test('mounted production-built SPA renders a private progress photo and full-size viewer',{timeout:180000},async()=>{
@@ -64,16 +64,13 @@ test('mounted production-built SPA renders a private progress photo and full-siz
     await cdp('WebAuthn.enable');await cdp('WebAuthn.addVirtualAuthenticator',{options:{protocol:'ctap2',transport:'internal',hasResidentKey:true,hasUserVerification:true,isUserVerified:true,automaticPresenceSimulation:true}});
     await cdp('Page.navigate',{url:runner.origin+'/'});
     await wait("document.querySelector('#root')?.textContent.includes('Create new profile')",'actual login UI did not mount');
-    // Produce real decodable fixture bytes instead of opaque hand-maintained base64.
-    // Only synthetic lavfi inputs; no network or user files. Fail if encoder unavailable.
-    const generated={};
-    for(const [name,size,format,codec] of [['mp4','48x32','mp4','libx264'],['mov','64x32','mov','libx264'],['gif','6x4','gif','gif']]){
-      const file=join(dir,'fixture.'+name);
-      const input=name==='gif'?'testsrc=size='+size+':rate=4:duration=1':'color=c=blue:s='+size+':r=5:d=1';
-      execFileSync('ffmpeg',['-hide_banner','-loglevel','error','-y','-f','lavfi','-i',input,'-an','-threads','1','-c:v',codec,...(name==='gif'?[]:['-pix_fmt','yuv420p','-profile:v','baseline','-movflags','+faststart']),'-f',format,file],{timeout:20000,stdio:['ignore','ignore','pipe']});
-      const bytes=await readFile(file);assert.ok(bytes.length>0&&bytes.length<128*1024);
-      generated[name]=bytes.toString('base64');
-    }
+    // Synthetic offline FFmpeg lavfi fixtures, decoded in full with FFmpeg and
+    // checked with ffprobe before embedding. CI need not install an encoder.
+    // Video: color=c=blue:s=48x32 (MOV 64x32):r=5:d=1, libx264 baseline,
+    // yuv420p, faststart, filter_units=remove_types=6; GIF: testsrc 6x4, 4 fps, 1 s.
+    const generated={"gif":"R0lGODlhBgAEAPcfMQAAACQAAEgAAGwAAJAAALQAANgAAPwAAAAkACQkAEgkAGwkAJAkALQkANgkAPwkAABIACRIAEhIAGxIAJBIALRIANhIAPxIAABsACRsAEhsAGxsAJBsALRsANhsAPxsAACQACSQAEiQAGyQAJCQALSQANiQAPyQAAC0ACS0AEi0AGy0AJC0ALS0ANi0APy0AADYACTYAEjYAGzYAJDYALTYANjYAPzYAAD8ACT8AEj8AGz8AJD8ALT8ANj8APz8AAAAVSQAVUgAVWwAVZAAVbQAVdgAVfwAVQAkVSQkVUgkVWwkVZAkVbQkVdgkVfwkVQBIVSRIVUhIVWxIVZBIVbRIVdhIVfxIVQBsVSRsVUhsVWxsVZBsVbRsVdhsVfxsVQCQVSSQVUiQVWyQVZCQVbSQVdiQVfyQVQC0VSS0VUi0VWy0VZC0VbS0Vdi0Vfy0VQDYVSTYVUjYVWzYVZDYVbTYVdjYVfzYVQD8VST8VUj8VWz8VZD8VbT8Vdj8Vfz8VQAAqiQAqkgAqmwAqpAAqrQAqtgAqvwAqgAkqiQkqkgkqmwkqpAkqrQkqtgkqvwkqgBIqiRIqkhIqmxIqpBIqrRIqthIqvxIqgBsqiRsqkhsqmxsqpBsqrRsqthsqvxsqgCQqiSQqkiQqmyQqpCQqrSQqtiQqvyQqgC0qiS0qki0qmy0qpC0qrS0qti0qvy0qgDYqiTYqkjYqmzYqpDYqrTYqtjYqvzYqgD8qiT8qkj8qmz8qpD8qrT8qtj8qvz8qgAA/yQA/0gA/2wA/5AA/7QA/9gA//wA/wAk/yQk/0gk/2wk/5Ak/7Qk/9gk//wk/wBI/yRI/0hI/2xI/5BI/7RI/9hI//xI/wBs/yRs/0hs/2xs/5Bs/7Rs/9hs//xs/wCQ/ySQ/0iQ/2yQ/5CQ/7SQ/9iQ//yQ/wC0/yS0/0i0/2y0/5C0/7S0/9i0//y0/wDY/yTY/0jY/2zY/5DY/7TY/9jY//zY/wD8/yT8/0j8/2z8/5D8/7T8/9j8//z8/yH/C05FVFNDQVBFMi4wAwEAAAAh+QQEGQAfACwAAAAABgAEAAAIGAABHMDxA9gxgceA/Th4IOHCAz9w4DMYEAAh+QQFGQAAACwAAAMABgABAAAICgAv+MADT9ihgAAAIfkEBRkAAAAsAAADAAYAAQAACAoAP/AAgI3YkYAAACH5BAUZAAAALAAAAwAGAAEAAAgKAG/owAfN2IGAAAA7","mov":"AAAAFGZ0eXBxdCAgAAACAHF0ICAAAAMObW9vdgAAAGxtdmhkAAAAAAAAAAAAAAAAAAAD6AAAA+gAAQAAAQAAAAAAAAAAAAAAAAEAAAAAAAAAAAAAAAAAAAABAAAAAAAAAAAAAAAAAABAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAgAAAnp0cmFrAAAAXHRraGQAAAADAAAAAAAAAAAAAAABAAAAAAAAA+gAAAAAAAAAAAAAAAAAAAAAAAEAAAAAAAAAAAAAAAAAAAABAAAAAAAAAAAAAAAAAABAAAAAAEAAAAAgAAAAAAAkZWR0cwAAABxlbHN0AAAAAAAAAAEAAAPoAAAAAAABAAAAAAHybWRpYQAAACBtZGhkAAAAAAAAAAAAAAAAAAAoAAAAKAB//wAAAAAALWhkbHIAAAAAbWhscnZpZGUAAAAAAAAAAAAAAAAMVmlkZW9IYW5kbGVyAAABnW1pbmYAAAAUdm1oZAAAAAEAAAAAAAAAAAAAACxoZGxyAAAAAGRobHJ1cmwgAAAAAAAAAAAAAAAAC0RhdGFIYW5kbGVyAAAAJGRpbmYAAAAcZHJlZgAAAAAAAAABAAAADHVybCAAAAABAAABMXN0YmwAAAClc3RzZAAAAAAAAAABAAAAlWF2YzEAAAAAAAAAAQAAAABGRk1QAAACAAAAAgAAQAAgAEgAAABIAAAAAAAAAAEVTGF2YzYxLjE5LjEwMSBsaWJ4MjY0AAAAAAAAAAAAAAAY//8AAAAvYXZjQwFCwAr/4QAXZ0LACtkEWwEQAAADABAAAAMAoPEiZIABAAVoy4PLIAAAABBwYXNwAAAAAQAAAAEAAAAYc3R0cwAAAAAAAAABAAAABQAACAAAAAAUc3RzcwAAAAAAAAABAAAAAQAAABxzdHNjAAAAAAAAAAEAAAABAAAABQAAAAEAAAAoc3RzegAAAAAAAAAAAAAABQAAAB4AAAAKAAAACgAAAAoAAAAKAAAAFHN0Y28AAAAAAAAAAQAAAzIAAAAgdWR0YQAAABipc3dyAAxVxExhdmY2MS43LjEwMwAAAAh3aWRlAAAATm1kYXQAAAAaZYiEBHxGKAAMSMcAAW1o4AAh8ycnJ11114AAAAAGQZo4CPiYAAAABkGaVAI+JgAAAAZBmmAQ8TAAAAAGQZqAP8TA","mp4":"AAAAIGZ0eXBpc29tAAACAGlzb21pc28yYXZjMW1wNDEAAAM2bW9vdgAAAGxtdmhkAAAAAAAAAAAAAAAAAAAD6AAAA+gAAQAAAQAAAAAAAAAAAAAAAAEAAAAAAAAAAAAAAAAAAAABAAAAAAAAAAAAAAAAAABAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAgAAAmF0cmFrAAAAXHRraGQAAAADAAAAAAAAAAAAAAABAAAAAAAAA+gAAAAAAAAAAAAAAAAAAAAAAAEAAAAAAAAAAAAAAAAAAAABAAAAAAAAAAAAAAAAAABAAAAAADAAAAAgAAAAAAAkZWR0cwAAABxlbHN0AAAAAAAAAAEAAAPoAAAAAAABAAAAAAHZbWRpYQAAACBtZGhkAAAAAAAAAAAAAAAAAAAoAAAAKABVxAAAAAAALWhkbHIAAAAAAAAAAHZpZGUAAAAAAAAAAAAAAABWaWRlb0hhbmRsZXIAAAABhG1pbmYAAAAUdm1oZAAAAAEAAAAAAAAAAAAAACRkaW5mAAAAHGRyZWYAAAAAAAAAAQAAAAx1cmwgAAAAAQAAAURzdGJsAAAAuHN0c2QAAAAAAAAAAQAAAKhhdmMxAAAAAAAAAAEAAAAAAAAAAAAAAAAAAAAAADAAIABIAAAASAAAAAAAAAABFUxhdmM2MS4xOS4xMDEgbGlieDI2NAAAAAAAAAAAAAAAGP//AAAALmF2Y0MBQsAK/+EAFmdCwArZDWwEQAAAAwBAAAADAoPEiZIBAAVoy4PLIAAAABBwYXNwAAAAAQAAAAEAAAAUYnRydAAAAAAAAAIYAAAAAAAAABhzdHRzAAAAAAAAAAEAAAAFAAAIAAAAABRzdHNzAAAAAAAAAAEAAAABAAAAHHN0c2MAAAAAAAAAAQAAAAEAAAAFAAAAAQAAAChzdHN6AAAAAAAAAAAAAAAFAAAAHAAAAAoAAAAKAAAACgAAAAkAAAAUc3RjbwAAAAAAAAABAAADZgAAAGF1ZHRhAAAAWW1ldGEAAAAAAAAAIWhkbHIAAAAAAAAAAG1kaXJhcHBsAAAAAAAAAAAAAAAALGlsc3QAAAAkqXRvbwAAABxkYXRhAAAAAQAAAABMYXZmNjEuNy4xMDMAAAAIZnJlZQAAAEttZGF0AAAAGGWIhAR8RigADEjHAAFtaOAAIfMnJ1114AAAAAZBmjgI+eAAAAAGQZpUAj54AAAABkGaYBDzwAAAAAVBmoA/zw=="};
+    const fixtureDigests={"gif":"08cbe58f215d0fef2f21a812188a5f9a55115d7e8f02710f9b44e1a47ae16f7b","mov":"567f298a2bf9e06c2c55676c83518c32a23c8051e0ff642191bb03c95aa48207","mp4":"0bf40fcb53e4687e533d47780b3c393af7956aaf8ffa7be09187a813ed5e907f"};
+    for(const [name,base64] of Object.entries(generated))assert.equal(createHash('sha256').update(Buffer.from(base64,'base64')).digest('hex'),fixtureDigests[name],'embedded fixture integrity: '+name);
     const fixture=await evaluate(`(async()=>{
       const post=async(p,b)=>{const r=await fetch(p,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(b)});if(!r.ok)throw Error('POST '+p+' '+r.status);return r.json();};
       const o=await post('/api/register/options',{name:'Synthetic browser',code:${JSON.stringify(SETUP_CODE)}});
