@@ -427,7 +427,35 @@ test('verified encrypted disk fixture restores known state/media to an independe
     const AUTH_SECRET=randomBytes(32).toString('hex'),SETUP_CODE=randomBytes(32).toString('hex');
     const runner=await localRunner('wrangler.web-media.jsonc',{health:'/api/health',privateLogs:true,syntheticDiagnostics:true,vars:origin=>({AUTH_SECRET,SETUP_CODE,API_ORIGIN:origin,RP_ID:'localhost',P5_MEDIA:'1'})});
     let cookie='',owner=null;
-    const raw=(p,method='GET',body,headers={})=>fetch(runner.base+p,{method,redirect:'error',headers:{origin:runner.origin,...(cookie?{cookie}:{}),...headers},...(body===undefined?{}:{body}),signal:AbortSignal.timeout(15000)});
+    // The two disposable Workers are stopped and restarted on the same ports.
+    // Use fresh connections rather than reusing a pooled socket across restart.
+    // Never retry an unknown write outcome or treat a transport failure as 413.
+    const raw=async(p,method='GET',body,headers={})=>{
+      try{return await fetch(runner.base+p,{method,redirect:'error',headers:{connection:'close',origin:runner.origin,...(cookie?{cookie}:{}),...headers},...(body===undefined?{}:{body}),signal:AbortSignal.timeout(15000)});}
+      catch(e){throw Error('restore fixture '+method+' '+p.replace(/[a-f0-9]{64}/g,'<hash>')+' transport '+(e.cause?.code||e.name),{cause:e});}
+    };
+    // A deliberately oversized declaration must be rejected before body reads.
+    // Send the real archived bytes in bounded chunks and capture the complete
+    // HTTP response even if the server stops reading the request early.
+    // Do not convert a connection reset without a response into a PASS.
+    const rejectOversized=(h,b,m)=>new Promise((resolve,reject)=>{
+      let settled=false,responded=false,offset=0;
+      const finish=(err,value)=>{if(settled)return;settled=true;clearTimeout(deadline);req.destroy();err?reject(err):resolve(value);};
+      const req=request(runner.base+'/api/media/'+h,{method:'PUT',agent:false,headers:{connection:'close',origin:runner.origin,cookie,'content-type':m,'content-length':b.length,'x-opengym-account':owner}},res=>{
+        responded=true;const chunks=[];let n=0;
+        res.on('data',c=>{n+=c.length;if(n>64*1024){finish(Error('oversized rejection response too large'));return;}chunks.push(c);});
+        res.on('aborted',()=>finish(Error('oversized rejection response aborted')));
+        res.on('error',e=>finish(e));
+        res.on('end',()=>{try{finish(null,{status:res.statusCode,body:JSON.parse(Buffer.concat(chunks).toString('utf8'))});}catch(e){finish(e);}});
+      });
+      const deadline=setTimeout(()=>finish(Error('oversized rejection response deadline')),15000);
+      req.on('error',e=>{if(!responded)finish(Error('oversized restore PUT transport '+(e.code||e.name),{cause:e}));});
+      const send=()=>{if(settled||responded)return;if(offset===b.length){req.end();return;}
+        const next=Math.min(offset+64*1024,b.length),part=b.subarray(offset,next);offset=next;
+        if(req.write(part))setImmediate(send);else req.once('drain',send);
+      };
+      req.flushHeaders();setImmediate(send);
+    });
     const json=async(res,status=200)=>{assert.equal(res.status,status);return res.json();};
     const post=(p,b)=>raw(p,'POST',JSON.stringify(b),{'content-type':'application/json'});
     function rawData(){return raw('/api/data');}
@@ -456,7 +484,7 @@ test('verified encrypted disk fixture restores known state/media to an independe
       const blob=await res.blob();if(blob.size!==length)throw Error('destination truncated');
       return blob;
     };
-    return {runner,register,raw,json,state,put,save,current,read};
+    return {runner,register,raw,json,state,put,save,current,read,rejectOversized};
   };
   const source=await mk(),target=await mk(),backupDir=await mkdtemp(join(tmpdir(),'opengym-p5-backup-'));
   const key=randomBytes(32),aad=Buffer.from('opengym-synthetic-backup-fixture-v1'),archivePath=join(backupDir,'snapshot.enc');
@@ -535,6 +563,7 @@ test('verified encrypted disk fixture restores known state/media to an independe
     assert.equal(sha(Buffer.from(await (await source.read(hash,sourceOwner)).arrayBuffer())),hash);
     assert.equal(sha(Buffer.from(await (await source.read(ah,sourceOwner)).arrayBuffer())),ah);
     assert.deepEqual(await readFile(archivePath),encrypted);
+    console.log('PHASE5_COMPATIBLE_RESTORE_READBACK PASS');
     // Existing device bytes may exceed the destination cap even though the old
     // server accepted them. Keep a separate encrypted fixture and do not publish
     // a dangling ref or silently transcode/drop the original.
@@ -554,7 +583,7 @@ test('verified encrypted disk fixture restores known state/media to an independe
     assert.deepEqual(legacyAudit.issues,['destination-not-verified','destination-size-limit']);
     assert.deepEqual(legacyAudit.records,[{hash:lh,local:'missing',backup:'verified',destination:'missing',overLimit:true}]);
     assert.equal(legacyAudit.cutoverAuthorized,false);
-    const reject=await target.put(lh,legacyBytes,lr.mime);assert.equal(reject.status,413);assert.equal((await reject.json()).code,'media-too-large');
+    const reject=await target.rejectOversized(lh,legacyBytes,lr.mime);assert.equal(reject.status,413);assert.equal(reject.body.code,'media-too-large');
     assert.equal(await target.read(lh,destinationOwner),null);
     assert.deepEqual(await target.state(),committed);
     assert.deepEqual(await readFile(legacyPath),legacyArchive);
