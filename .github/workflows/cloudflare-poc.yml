@@ -236,7 +236,7 @@ jobs:
   privacy-recovery:
     if: github.ref == 'refs/heads/feat/cloudflare-migration'
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
@@ -244,13 +244,20 @@ jobs:
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1
         with:
           node-version: '26'
+      - run: npm ci --no-audit --no-fund
+        working-directory: cloudflare-poc
+      - run: npm ci --ignore-scripts --no-audit --no-fund
+        working-directory: frontend
+      - run: npm run build
+        working-directory: frontend
+      - run: node scripts/catalogue/stage-media.mjs frontend/dist
       - name: Phase 6 local synthetic recovery archive and quota ledger
         working-directory: cloudflare-poc
         run: |
           mkdir -p reports
-          node --check src/recovery/archive.js
+          node --check src/recovery/archive.js && node --check src/recovery/disk.js
           status=0
-          /usr/bin/time -v -o reports/privacy-recovery-process-profile.txt node --test --test-concurrency=1 test/privacy-recovery.test.mjs || status=$?
+          /usr/bin/time -v -o reports/privacy-recovery-process-profile.txt node --test --test-concurrency=1 test/privacy-recovery.test.mjs test/recovery-worker.test.mjs || status=$?
           cat reports/privacy-recovery-process-profile.txt
           exit "$status"
       - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f
