@@ -18,10 +18,27 @@ test('mounted production-built SPA renders a private progress photo and full-siz
     await runner.start();
     browser=spawn(process.env.CHROME_BIN||'google-chrome',['--headless','--no-sandbox','--disable-dev-shm-usage','--disable-background-networking','--disable-component-update','--no-first-run','--no-default-browser-check','--remote-debugging-port=0','--user-data-dir='+dir,'--lang=en-US','--window-size=1280,900','about:blank'],{stdio:'ignore',detached:true});
     browser.on('error',e=>launchError=e);
-    let port;
-    for(let i=0;i<300;i++){if(launchError)throw launchError;if(browser.exitCode!==null||browser.signalCode!==null)throw Error('Chrome exited');try{port=(await readFile(join(dir,'DevToolsActivePort'),'utf8')).split('\n')[0];break;}catch{}await sleep(100);}
-    assert.ok(port,'Chrome CDP unavailable');
-    const targets=await (await fetch('http://127.0.0.1:'+port+'/json/list')).json(),page=targets.find(t=>t.type==='page');assert.ok(page);
+    // Chrome creates DevToolsActivePort before its contents are necessarily
+    // readable. Do not break on an empty/partial file or before CDP serves a page.
+    let page;
+    for(let i=0;i<300;i++){
+      if(launchError)throw launchError;
+      if(browser.exitCode!==null||browser.signalCode!==null)throw Error('Chrome exited');
+      try{
+        const lines=(await readFile(join(dir,'DevToolsActivePort'),'utf8')).split('\n');
+        const port=Number(lines[0].trim());
+        if(/^\d+$/.test(lines[0].trim())&&Number.isInteger(port)&&port>0&&port<=65535&&lines[1]?.startsWith('/devtools/browser/')){
+          const response=await fetch('http://127.0.0.1:'+port+'/json/list',{signal:AbortSignal.timeout(1000)});
+          if(response.ok){
+            const targets=await response.json();
+            page=targets.find(t=>t.type==='page'&&typeof t.webSocketDebuggerUrl==='string');
+            if(page)break;
+          }
+        }
+      }catch{/* startup readiness is retried, not test assertions */}
+      await sleep(100);
+    }
+    assert.ok(page,'Chrome CDP unavailable after readiness polling');
     ws=new WebSocket(page.webSocketDebuggerUrl);
     await new Promise((resolve,reject)=>{ws.addEventListener('open',resolve,{once:true});ws.addEventListener('error',reject,{once:true});});
     let seq=0;const pending=new Map(),network=[];
