@@ -232,3 +232,31 @@ jobs:
             cloudflare-poc/reports/web-browser-process-profile.txt
           if-no-files-found: warn
           retention-days: 7
+
+  privacy-recovery:
+    if: github.ref == 'refs/heads/feat/cloudflare-migration'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1
+        with:
+          node-version: '26'
+      - name: Phase 6 local synthetic recovery archive and quota ledger
+        working-directory: cloudflare-poc
+        run: |
+          mkdir -p reports
+          node --check src/recovery/archive.js
+          status=0
+          /usr/bin/time -v -o reports/privacy-recovery-process-profile.txt node --test --test-concurrency=1 test/privacy-recovery.test.mjs || status=$?
+          cat reports/privacy-recovery-process-profile.txt
+          exit "$status"
+      - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f
+        if: always()
+        with:
+          name: phase6-privacy-recovery-process-profile
+          path: cloudflare-poc/reports/privacy-recovery-process-profile.txt
+          if-no-files-found: error
+          retention-days: 7
