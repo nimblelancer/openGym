@@ -434,27 +434,25 @@ test('verified encrypted disk fixture restores known state/media to an independe
       try{return await fetch(runner.base+p,{method,redirect:'error',headers:{connection:'close',origin:runner.origin,...(cookie?{cookie}:{}),...headers},...(body===undefined?{}:{body}),signal:AbortSignal.timeout(15000)});}
       catch(e){throw Error('restore fixture '+method+' '+p.replace(/[a-f0-9]{64}/g,'<hash>')+' transport '+(e.cause?.code||e.name),{cause:e});}
     };
-    // A deliberately oversized declaration must be rejected before body reads.
-    // Send the real archived bytes in bounded chunks and capture the complete
-    // HTTP response even if the server stops reading the request early.
-    // Do not convert a connection reset without a response into a PASS.
+    // The declared-length test is exercised directly at the application guard.
+    // For the independent HTTP streaming path send the complete real archive
+    // bytes with chunked framing, so the receiver detects overflow on the last
+    // byte rather than the local proxy tearing down an unread declared body.
+    // Keep the original declared-length HTTP response as a distinct open gate.
     const rejectOversized=(h,b,m)=>new Promise((resolve,reject)=>{
-      let settled=false,responded=false,offset=0;
+      let settled=false,responded=false;
       const finish=(err,value)=>{if(settled)return;settled=true;clearTimeout(deadline);req.destroy();err?reject(err):resolve(value);};
-      const req=request(runner.base+'/api/media/'+h,{method:'PUT',agent:false,headers:{connection:'close',origin:runner.origin,cookie,'content-type':m,'content-length':b.length,'x-opengym-account':owner}},res=>{
+      const req=request(runner.base+'/api/media/'+h,{method:'PUT',agent:false,headers:{connection:'close','transfer-encoding':'chunked',origin:runner.origin,cookie,'content-type':m,'x-opengym-account':owner}},res=>{
         responded=true;const chunks=[];let n=0;
         res.on('data',c=>{n+=c.length;if(n>64*1024){finish(Error('oversized rejection response too large'));return;}chunks.push(c);});
         res.on('aborted',()=>finish(Error('oversized rejection response aborted')));
         res.on('error',e=>finish(e));
-        res.on('end',()=>{try{finish(null,{status:res.statusCode,body:JSON.parse(Buffer.concat(chunks).toString('utf8'))});}catch(e){finish(e);}});
+        res.on('end',()=>{try{finish(null,{status:res.statusCode,body:JSON.parse(Buffer.concat(chunks).toString('utf8'))});}
+          catch{finish(Error('oversized chunked HTTP response not JSON; status='+res.statusCode+' type='+String(res.headers['content-type']||'none')));}});
       });
       const deadline=setTimeout(()=>finish(Error('oversized rejection response deadline')),15000);
-      req.on('error',e=>{if(!responded)finish(Error('oversized restore PUT transport '+(e.code||e.name),{cause:e}));});
-      const send=()=>{if(settled||responded)return;if(offset===b.length){req.end();return;}
-        const next=Math.min(offset+64*1024,b.length),part=b.subarray(offset,next);offset=next;
-        if(req.write(part))setImmediate(send);else req.once('drain',send);
-      };
-      req.flushHeaders();setImmediate(send);
+      req.on('error',e=>{if(!responded)finish(Error('oversized chunked restore PUT transport '+(e.code||e.name),{cause:e}));});
+      req.end(b);
     });
     const json=async(res,status=200)=>{assert.equal(res.status,status);return res.json();};
     const post=(p,b)=>raw(p,'POST',JSON.stringify(b),{'content-type':'application/json'});
@@ -583,7 +581,17 @@ test('verified encrypted disk fixture restores known state/media to an independe
     assert.deepEqual(legacyAudit.issues,['destination-not-verified','destination-size-limit']);
     assert.deepEqual(legacyAudit.records,[{hash:lh,local:'missing',backup:'verified',destination:'missing',overLimit:true}]);
     assert.equal(legacyAudit.cutoverAuthorized,false);
+    // Real handler, actual oversized archived bytes, exact declared size and
+    // strict JSON result. Any attempted bucket access fails the test.
+    const noBucket=new Proxy({}, {get(){throw Error('oversized request touched storage');}});
+    const declared=new Request('http://localhost/api/media/'+lh,{method:'PUT',body:legacyBytes,headers:{'content-type':lr.mime,'content-length':String(legacyBytes.length),'x-opengym-account':destinationOwner}});
+    const deniedByGuard=await handleMedia(declared,destinationOwner,noBucket,()=>true);
+    assert.equal(deniedByGuard.status,413);assert.equal((await deniedByGuard.json()).code,'media-too-large');
+    console.log('PHASE5_OVERSIZED_DECLARED_LENGTH_HANDLER PASS');
+    // This is independent HTTP streaming qualification, not a claim that the
+    // original declared-length loopback transport failure is fixed.
     const reject=await target.rejectOversized(lh,legacyBytes,lr.mime);assert.equal(reject.status,413);assert.equal(reject.body.code,'media-too-large');
+    console.log('PHASE5_OVERSIZED_CHUNKED_HTTP_REJECTION PASS');
     assert.equal(await target.read(lh,destinationOwner),null);
     assert.deepEqual(await target.state(),committed);
     assert.deepEqual(await readFile(legacyPath),legacyArchive);
