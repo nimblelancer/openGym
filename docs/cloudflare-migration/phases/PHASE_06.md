@@ -147,3 +147,74 @@ P6-A documented, B/C/D/E scoped local evidence with remaining gates, F review on
 | P6-15 | OPEN owner sign-off |
 
 P6-A documented; B scoped PASS; C/D/E partial; F integrated review ongoing. Preserve Phase 3 ab4e3782 physical M3/P3-04/P3-21, Phase 4 85755081 P4-09/R6/M4/P4-15/P4-16, Phase 5 85b3e004 D1–D4 original HTTP/legacy/reset/device/hosted and other mandatory gates. All deferred acceptance required before consolidated Phase 7 closure and release; existing-account cutover prohibited. Next review 46099685999 all eight jobs/artifacts/profiles and new bounded capacity read/segmented HTTP/privacy markers. Fix confirmed failures only. If green consolidate scope, identify remaining local safety requirements vs explicit deferred owner/hosted gates and seek owner direction before freeze/transition. No phase closure, Phase 7, production deployment, main merge, real-data cutover, native rebuild, remote resource operations, destructive purge or Learning Hub changes.
+
+## Phase 6 Increment 004 final scoped review — 2026-11-28
+
+**Candidate:** 9f3af3dc6b6660be2555c74ca0646d46faccdad6. [CI 46099685999](https://github.com/nimblelancer/openGym/actions/runs/46099685999) completed SUCCESS. All eight direct job logs inspected: upstream-api 1084/1084 (140839064286), mobile-contract 2/2 (140839064491), web-media 11/11 (Node 9, client 1, browser 1; 140839064500), storage 6/6 (140839064545), privacy-recovery 11/11 (140839064555), frontend-and-assets 10110/10110 in 898 files (140839064565), auth-core 9/9 (140839064580), POC 6/6 (140839064660). Total 11239/11239 executions PASS. No confirmed new CI failure. No new source changes, speculative hotfix or additional implementation iteration in this review.
+
+### Verified scope
+
+- PHASE6_CAPACITY_BUNDLE_208MIB and PHASE6_CAPACITY_BOUNDED_RESTORE_READ_200MIB PASS: 25 synthetic 8 MiB remote rows and an 8 MiB+1 device-only original preserved in authenticated encrypted bundle; all 200 MiB remote bytes read sequentially, each <=8 MiB returned only after GCM final and SHA verification; device-only upload refused. This is a disk backup/restore-read capacity proof, not 200 MiB uploaded to actual R2, playable video, device-local restore or arbitrary production profile support.
+- PHASE6_SEGMENTED_HTTP_RESTORE_INTERRUPTION PASS: representative actual authenticated local source/destination Workers, valid PNG and canonical 30-second WAV, 64 KiB HTTP stream chunks from authenticated per-object buffer, distinct owners, empty destination state, partial first upload followed by restart, exact readback and missing reconciliation, tampered second ciphertext refused before its upload, resume from restored valid synthetic ciphertext, exact media/usage and selected state readback, stale revision refusal, restart, preserved source and manifest digest. Not a mid-stream network interruption of that particular request, ambiguous state acknowledgement or concurrent-client fence test; prior Phase 5 interruption evidence retained.
+- PHASE6_PRIVACY_UNSUPPORTED_ROUTE_MATRIX PASS: 19 representative absent routes x anonymous/authenticated = 38 requests with JSON 404/no-store, including recovery/purge probes, no SPA HTML or fake success; exact tested config flags, private no-store/same-origin media, anonymous denial and unchanged state. Not full 170-operation contract or actual official UI/caller qualification; unsupported capability policy remains to be accepted for release.
+- All earlier Phase 6 markers PASS: authenticated archive, key/owner/tamper rejection, known inventory, quota ledger, bounded original preservation, bundle fault handling, durable exclusive publication, retained omission detection, committed-state byte reconciliation, independent Worker restore, authenticated quota reconciliation, restrictive registration/rotation/abuse, secret configuration. Phase 3 virtual passkey/manual harness and Phase 4 pinned module/store regressions and Phase 5 scoped media regressions PASS. Phase 5 original declared Content-Length HTTP OPEN/FAIL and legacy ACK/pending/cache eviction RISK_REPRODUCED remain explicitly unresolved, deferred under D1–D4, not waived.
+
+### Artifact and frozen baseline verification
+
+Downloaded all seven ZIPs; independently computed SHA-256 and matched API digest, CRC clean, extracted expected contents:
+- web-media 15245336099: a4560702bd0cf0e817886f40c6506c7e0c9ca721c9394a63e6afadc5b19e6505
+- lock 15245001854: 1e42250ab554da5efa8da4c485218e3e43ba86042fc081296935508bd0b91028
+- mobile 15244952233: 11cf3be3727134b7bffd16f7e9fd2feefd97e499a70ace721cf4c7c189c3b3b2
+- assets 15244797902: 65f498172536ef2406f663fc7d786e55f0354284f2acb01cba357c3f40a484bf
+- privacy 15244738928: 4f39c89e3fc5d50f81bdc35f53c9eda998762b1f549f81254af757792b334410
+- auth 15244649138: 2b3785b61a0bc6ce9608919812d64ddb9792137e64e721b874aa7d64ade0ff39
+- storage 15244283457: 794938767763c221857afcbbd1c8d0b7e794ec943df05df4592d99b1f7b88ba4
+
+Asset manifest SHA-256 c261fa6cd3d3f60d0dad90458726dd30431218560bf7c443aa28abec4e4acd02, 13345 files, 13109 media, 242979940 bytes, oversized none. Lock Git blob independently computed 0cde099db0392a2583158df6911b3180d20698be matches candidate repository; both unchanged.
+
+| Process | Wall seconds | User seconds | System seconds | Peak RSS KiB | Exit |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| Storage | 17.12 | 5.87 | 0.88 | 313752 | 0 |
+| Auth | 52.33 | 19.80 | 4.19 | 318184 | 0 |
+| Mobile | 14.01 | 12.06 | 2.29 | 542808 | 0 |
+| Node media | 39.33 | 32.11 | 6.93 | 533968 | 0 |
+| Client media | 5.50 | 5.95 | 1.09 | 473192 | 0 |
+| Mounted browser | 24.73 | 5.80 | 1.58 | 453760 | 0 |
+| Privacy-recovery | 30.03 | 27.12 | 5.62 | 546512 | 0 |
+
+Seven local process profiles exit 0. These are aggregate process measurements, not hosted Worker CPU/heap, per-object peak memory or billing metrics. Frozen Phase 5 comparison: 11 ahead/0 behind at tested candidate, only recovery modules, Phase 6 tests, workflow (dedicated Phase 6 job) and migration docs; no frozen runtime, frontend/native, earlier fixtures, upstream API or dependency modifications. Documentation head 4eb0d881 was one commit ahead of tested candidate, three migration docs only.
+
+### Consolidated Phase 6 local acceptance (authoritative current status)
+
+| Criterion | Status and outstanding gate |
+| --- | --- |
+| P6-01 | DOCUMENTED |
+| P6-02 | Scoped PASS: authenticated versioned archive, segmented capacity bundle |
+| P6-03 | PARTIAL: known-file integrity and retained omission detection PASS; complete source/device/stash/active/retained discovery and consistent inventory fence OPEN |
+| P6-04 | Scoped PASS: malformed/tamper/owner/key/size/interruption and restore reauthentication; untrusted adapter deadlines and filesystem concurrency remain OPEN |
+| P6-05 | Scoped PASS: durable local exclusive publication and separate synthetic key retrieval; independent custody/power-loss/off-provider verification OPEN |
+| P6-06 | PARTIAL: 200 MiB bounded restore read and compatible representative independent HTTP restore PASS; actual full-capacity R2 restore and device-local restore OPEN |
+| P6-07 | PARTIAL: restart, tamper/resume, stale revision and source preservation PASS; ambiguous state commit, concurrent/stale-client fence and cutover OPEN |
+| P6-08 | Scoped PASS: actual R2 retained quota and committed SQLite payload bytes; total hosted account quotas/cost OPEN |
+| P6-09 | Scoped PASS: known inventory bounds, omission detection, malformed input, registration/challenge limits; hosted/adapter abuse OPEN |
+| P6-10 | Scoped PASS: restrictive registration, secrets, rotation/revocation; physical device and lost-last-passkey recovery OPEN |
+| P6-11 | PARTIAL: runbook and 38 representative route privacy requests PASS; full caller/UI handling, export data allowlist, truthful reset/erase, production key and recovery policy OPEN |
+| P6-12 | Scoped PASS: final Increment 004 eight jobs, seven artifacts and seven profiles verified |
+| P6-13 | DEFERRED: independent operational off-provider backup/key custody and restore rehearsal, not waived |
+| P6-14 | DEFERRED: hosted quota/CPU/cost/abuse and rollback qualification, not waived |
+| P6-15 | OPEN: owner decision and final sign-off |
+
+P6-A documented; B scoped PASS; C/D/E partial beyond verified scope; F scoped local review PASS, final owner/release acceptance OPEN. Distribution: 7 scoped PASS, 4 partial, 2 deferred, 1 open, 1 documented. Phase 6 remains OPEN. Recommend freezing this candidate only with owner approval; do not call it fully accepted.
+
+### Remaining gates: classification and owner decisions (proposed, not approved)
+
+**Local/integrated engineering release blockers:** P6-03/04/06/07/09/11: complete owner-bound source/device/stash/active and retained inventory with consistent fencing, production-capacity actual compatible restore, device-only/oversized preservation and recovery, bounded trusted adapter/hostile filesystem scope, state commit lost acknowledgement and stale/concurrent-client fences, operational export schema/privacy and truthful reset/erase UI, full relevant contract/caller handling. P6-10: recovery when final passkey is lost remains undefined. Recovery helpers are local prototypes, not a deployed backup/restore service; no rebootstrap/auth bypass. Neither existing-account cutover nor general production operation is approved. Known-file checks and bounded prototypes must not be mistaken for a complete backup product.
+
+**Deferred owner/device/hosted acceptance:** P6-13 independent operational encrypted off-provider backup and recovery-key custody/retrieval/rehearsal, P6-14 hosted resource and remaining account free-tier/cost/abuse/rollback evidence. Preserve mandatory Phase 3 physical passkey M3-01..09 / P3-04 / P3-21; Phase 4 P4-09 residual data safety, R6 official installed client, M4-01..10/P4-15/P4-16 and other partial gates; Phase 5 original declared-length HTTP failure, legacy ACK/cache risk, truthful retention/reset safety, full format/device/hosted/off-provider and owner gates. Frozen Phase 3 ab4e3782, Phase 4 857550811adb4e4b16d562cdd9a4cc341d30eb1f, Phase 5 85b3e00416668b9bfd00aec35a49d5c1cc8c97ef remain intact; D1–D4 unchanged. All mandatory gates must be resolved and verified before consolidated Phase 7 closure/release, not just listed as deferred.
+
+- D5 (recommended): approve scoped Phase 6 local freeze at 9f3af3dc / CI 46099685999. Keep Phase 6 open for remaining acceptance; no full closure.
+- D6 (recommended): defer the above remaining local/integrated recovery and privacy work to a prioritized consolidated acceptance workstream under explicit owner authorization, rather than another speculative Phase 6 hotfix loop. Alternatively require targeted fixes before Phase 7 work. Existing-account cutover remains prohibited; no release until all mandatory blockers resolved. Do not treat an approved deferral as a PASS.
+- D7 (recommended): keep restrictive single-owner/passkey-only recovery policy, no password fallback/rebootstrap/auth bypass; require a tested independent recovery path including redundant passkeys and encrypted backup/key custody before release. Confirm deferred unsupported functionality for private MVP and require truthful UI/contract behavior. D1 retention/separate intentional erasure unchanged; no automatic/selective purge. Actual recovery/erasure and production key choices remain subject to separate scope and approval.
+- D8 (recommended): after D5–D7 explicit approval, separately authorize Phase 7 local/synthetic integrated planning and validation according to master plan, including resolving deferred local gates and preparing owner manual/hosted checklist. Hosted staging/resource creation needs separate explicit approval, no production, main merge, real-data cutover, native rebuild, remote operations, destructive purge or Learning Hub changes. No implicit transition from this review.
+
+Stop at this checkpoint pending owner decisions. No Phase 7 work or phase closure performed.
