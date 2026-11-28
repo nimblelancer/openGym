@@ -1109,3 +1109,105 @@ it.each(['cleanup-reread', 'tombstone-readback'])('Phase 7: cross-process stash 
     rmSync(dir, { recursive: true, force: true })
   }
 }, 20000)
+
+// The prior two cases publish during a read, before the corrective revalidation.
+// These cases publish at entry to the *actual* synthetic native write adapter,
+// after the final read has returned and the store has prepared its local write.
+// A regular Filesystem.writeFile is unconditional; the test does not grant it
+// a fictional compare-and-swap or make the child cooperate with Web Locks.
+it.each(['tombstone-write', 'compaction-write'])('Phase 7: independent publication at final %s must not be overwritten', async windowName => {
+  pairedPhone()
+  h.server = refusing
+  const dir = mkdtempSync(join(tmpdir(), 'opengym-p7-final-write-'))
+  const file = join(dir, 'opengym-stash.json')
+  const key = BASE + '|' + USER.id, foreignKey = BASE + '|foreign'
+  let ack = false, previous, lastRead, expectedBytes, newer, foreign, published = false
+  let readsSinceAck = 0, tombstoneWrites = 0, writesAfterPublication = 0
+  let childDistinct = false, exactPublication = false, finalReadMatched = false, localWritePrepared = false
+  h.stashDisk = {
+    read: () => {
+      const raw = readFileSync(file, 'utf8')
+      if (ack) { lastRead = raw; readsSinceAck++ }
+      return raw
+    },
+    write: data => {
+      const planned = JSON.parse(data)
+      const isTombstone = planned[key]?.cleared === true
+      const atWindow = windowName === 'tombstone-write'
+        ? isTombstone && tombstoneWrites === 0
+        : !Object.hasOwn(planned, key) && tombstoneWrites === 1
+      if (ack && previous && !published && atWindow) {
+        const before = readFileSync(file, 'utf8')
+        const original = JSON.parse(before)[key]
+        // Confirm this is the intended post-read write boundary, not an
+        // unrelated stash publication during setup or an earlier read hook.
+        finalReadMatched = lastRead === before && readsSinceAck >= 2 &&
+          (windowName === 'tombstone-write'
+            ? original?.cleared !== true && original?.at === previous.at
+            : original?.cleared === true)
+        localWritePrepared = localStorage.getItem('gym_stash') ===
+          (Object.keys(planned).length ? data : null)
+        const at = Math.max(previous.at, original?.at || 0, planned[key]?.at || 0) + 1
+        newer = { ...previous, at,
+          state: { ...clone(previous.state), workouts: [...previous.state.workouts, workout('final-process-edit', '2026-09-16')] } }
+        foreign = { server: BASE, uid: 'foreign', name: 'synthetic', at: at + 1,
+          state: { ...clone(DEF), workouts: [workout('final-foreign-edit', '2026-09-17')] } }
+        expectedBytes = JSON.stringify({ [key]: newer, [foreignKey]: foreign })
+        const pid = Number(execFileSync(process.execPath, ['-e',
+          'const fs=require("node:fs");const p=process.argv[1];fs.writeFileSync(p+".next",fs.readFileSync(0));fs.renameSync(p+".next",p);process.stdout.write(String(process.pid));',
+          file], { input: expectedBytes, encoding: 'utf8', timeout: 5000, maxBuffer: 1024 }))
+        childDistinct = Number.isSafeInteger(pid) && pid > 0 && pid !== process.pid
+        exactPublication = readFileSync(file, 'utf8') === expectedBytes
+        published = true
+      }
+      // This adapter deliberately models the current unconditional write
+      // contract. No injected refusal, automatic merge or synthetic CAS.
+      if (published) writesAfterPublication++
+      if (isTombstone) tombstoneWrites++
+      writeFileSync(file, data)
+    },
+  }
+  try {
+    const store = await freshStore()
+    await store.getState().boot()
+    store.getState().update(s => { s.workouts.push(workout('owed-final-window', '2026-09-15')) })
+    await store.getState().pushState()
+    expect(await store.getState().disconnectServer({ force: true })).toMatchObject({ stashed: true })
+    previous = JSON.parse(readFileSync(file, 'utf8'))[key]
+    expect(ids(previous.state.workouts)).toContain('owed-final-window')
+    const srv = serverWith(SERVER_STATE)
+    h.server = (path, method, init) => {
+      const result = srv.handle(path, method, init)
+      if (path === '/api/data' && method === 'PUT' && result.ok &&
+          ids(JSON.parse(init.body).state.workouts).includes('owed-final-window')) ack = true
+      return result
+    }
+    await store.getState().connectToServer(BASE, 'ABCD2345', async () => false)
+    const retained = published && readFileSync(file, 'utf8') === expectedBytes
+    console.log('PHASE7_FINAL_NATIVE_WRITE_WINDOW_OBSERVATION', JSON.stringify({
+      window: windowName, ack, published, childDistinct, exactPublication,
+      finalReadMatched, localWritePrepared, readsSinceAck, tombstoneWrites,
+      writesAfterPublication, retained,
+    }))
+    expect(ack).toBe(true)
+    expect(published).toBe(true)
+    expect(childDistinct).toBe(true)
+    expect(exactPublication).toBe(true)
+    expect(finalReadMatched).toBe(true)
+    expect(localWritePrepared).toBe(true)
+    expect(ids(srv.doc.workouts)).toContain('owed-final-window')
+    expect(ids(srv.doc.workouts)).not.toContain('final-process-edit')
+    expect(ids(srv.doc.workouts)).not.toContain('final-foreign-edit')
+    expect(ids(store.getState().S.workouts)).not.toContain('final-foreign-edit')
+    expect(localStorage.getItem('gym_owner')).toBe(USER.id)
+    expect(retained, 'unconditional native cleanup must not overwrite an independent publication').toBe(true)
+    expect(writesAfterPublication).toBe(0)
+    expect(await store.getState().keptState(BASE, USER.id)).toEqual(newer.state)
+    expect(await store.getState().keptState(BASE, 'foreign')).toEqual(foreign.state)
+    expect(readFileSync(file, 'utf8')).toBe(expectedBytes)
+    console.log('PHASE7_FINAL_NATIVE_WRITE_WINDOW PASS', windowName)
+  } finally {
+    h.stashDisk = null
+    rmSync(dir, { recursive: true, force: true })
+  }
+}, 20000)
