@@ -10,6 +10,8 @@ import {DatabaseSync} from 'node:sqlite';
 import {MediaLifecycle,GRACE_MS,DELETE_BATCH} from '../src/media-lifecycle.js';
 import {auditMigrationMedia} from '../src/migration-media-preflight.js';
 import {localRunner} from './local-runner.mjs';
+import {traceRunner} from './declared-http-trace-runner.mjs';
+const tracing=process.env.P7_BOUNDARY_TRACE==='1';
 import {authenticator} from './auth-fixture.mjs';
 import {inspect,parseRange,boundedBytes,readMediaJson,handleMedia,inventory} from '../src/media.js';
 import {jpeg,png,gif,webpVp8,webpVp8l,webpVp8x,mp4,webm} from '../../frontend/src/lib/media-samples.test-util.js';
@@ -32,7 +34,7 @@ function wav(samples=2205){
 test('Phase 7 original declared-length HTTP rejection after independent restore',{timeout:240000},async()=>{
   const mk=async()=>{
     const AUTH_SECRET=randomBytes(32).toString('hex'),SETUP_CODE=randomBytes(32).toString('hex');
-    const runner=await localRunner('wrangler.web-media.jsonc',{health:'/api/health',privateLogs:true,syntheticDiagnostics:true,vars:origin=>({AUTH_SECRET,SETUP_CODE,API_ORIGIN:origin,RP_ID:'localhost',P5_MEDIA:'1'})});
+    const runner=await (tracing?traceRunner:localRunner)(tracing?'wrangler.phase7-trace.jsonc':'wrangler.web-media.jsonc',{health:'/api/health',privateLogs:true,syntheticDiagnostics:true,vars:origin=>({AUTH_SECRET,SETUP_CODE,API_ORIGIN:origin,RP_ID:'localhost',P5_MEDIA:'1'})});
     let cookie='',owner=null;
     // The two disposable Workers are stopped and restarted on the same ports.
     // Use fresh connections rather than reusing a pooled socket across restart.
@@ -255,5 +257,5 @@ test('Phase 7 original declared-length HTTP rejection after independent restore'
     console.log('PHASE7_OVERSIZED_ENCRYPTED_BACKUP_PRESERVED PASS');
     console.log('PHASE7_ENCRYPTED_DISK_BACKUP_RESTORE PASS');
     console.log('PHASE7_DESTINATION_OWNER_REVISION_PREFLIGHT PASS');
-  }finally{key.fill(0);await source.runner.cleanup();await target.runner.cleanup();await rm(backupDir,{recursive:true,force:true});}
+  }finally{key.fill(0);if(tracing){await sleep(250);console.log('PHASE7_BOUNDARY_TRACE',JSON.stringify(target.runner.traceSummary()));}await source.runner.cleanup();await target.runner.cleanup();await rm(backupDir,{recursive:true,force:true});}
 });
