@@ -4,7 +4,7 @@ import {vault,bounded} from './storage.mjs';
 import {plan,compare,receiptStatus} from './planner.mjs';
 const B=v=>Buffer.from(canonical(v));
 export async function driver(fs,server){
-  const v=await vault(fs),auth={owner:server.uid,server:server.base,epochId:id(),fixtureGeneration:server.fixtureGeneration},fresh=new Set(),conflicts=new Set(),sent=new Set(),live=new Map(),observedBases=new Set();
+  const v=await vault(fs),auth=Object.freeze({owner:server.uid,server:server.base,epochId:id(),fixtureGeneration:server.fixtureGeneration}),fresh=new Set(),conflicts=new Set(),sent=new Set(),live=new Map(),observedBases=new Set();let busy=false;
   const hold=reason=>({status:'RECOVERY_HOLD',reason});
   const timeLeft=until=>{const left=until-Date.now();requireThat(left>0);return Math.min(left,LIMIT.io)};
   const request=(until,...args)=>bounded(()=>server.send(...args),timeLeft(until));
@@ -12,18 +12,20 @@ export async function driver(fs,server){
   const evidenceState=async(label,state,until)=>{const bytes=B(state);return {stateDigest:D(label,bytes),stateBytes:await v.evidence(bytes,until)}};
   async function capture(wire,ack,before,until){
     const me=await request(until,'/api/me'),data=await request(until,'/api/data'),rev=await request(until,'/api/data/rev'),after=await request(until,'/api/me');
-    return {epochId:auth.epochId,fixtureGeneration:server.fixtureGeneration,server:auth.server,wire,ack,before:before.status===200&&me.status===200&&me.body?.user?.id===auth.owner?before:me,after,data,rev};
+    return {epochId:auth.epochId,fixtureGeneration:server.fixtureGeneration,server:auth.server,wire,ack,before,preRead:me,after,data,rev};
   }
   async function readBase(until=Date.now()+LIMIT.operation){await assertAuthority(until);const read=await request(until,'/api/data'),base=read.body,rev=await request(until,'/api/data/rev');await assertAuthority(until);requireThat(read.status===200&&rev.status===200&&rev.body?.rev===base.rev&&(rev.body?.wid??null)===(base.state?._wid??null));observedBases.add(canonical(base));return base}
   return {auth,v,live,fresh,readBase,
     async verify(receipt,old){const until=Date.now()+LIMIT.operation;try{const before=await assertAuthority(until),observation=await capture(old.wire,old.ack,before,until),inv=await v.check(until);const result=receiptStatus(inv,receipt,auth,live,observation);if(result.status!=='ACKNOWLEDGED_RETAINED_SCOPED')live.delete(receipt.id);return result}catch{live.delete(receipt.id);return hold('receipt-authority')}},
     async event(payload,kind='owned'){
+      const until=Date.now()+LIMIT.operation;
       const b={eventId:id(),owner:auth.owner,server:auth.server,kind,at:Date.now(),payload};
-      const source={medium:'synthetic-new-event',selector:null,raw:await v.evidence(B({eventId:b.eventId,...logical(b)}))};
+      const source={medium:'synthetic-new-event',selector:null,raw:await v.evidence(B({eventId:b.eventId,...logical(b)}),until)};
       const entry=record('entry',{...b,source,logicalDigest:D('logical-entry',canonical(logical(b)))});
-      await v.record(entry);fresh.add(b.eventId);return entry;
+      await v.record(entry,until);fresh.add(b.eventId);return entry;
     },
     async attempt(entries,base,{stamped=true,transport,proof={active:[],media:[]},hook=async()=>{}}={}){
+      if(busy)return hold('attempt-in-progress');busy=true;
       let intent,ack,observation,wire;const until=Date.now()+LIMIT.operation;const guard=()=>timeLeft(until);
       try{
         guard();await assertAuthority(until);requireThat(observedBases.has(canonical(base)));
@@ -31,13 +33,15 @@ export async function driver(fs,server){
         const refs=entries.map(refEntry).sort((a,b)=>a.id.localeCompare(b.id));
         const p=plan(await v.check(until),auth,fresh,base,refs,{conflictEvents:conflicts});
         if(p.status!=='PLAN_ELIGIBLE')return p;
+        // Consume volatile permission before any possible intent publication.
+        // Only an observed authenticated 409 can enable a new replan.
+        for(const r of entries){fresh.delete(r.body.eventId);conflicts.delete(r.body.eventId)}
         await bounded(()=>hook('before-intent'),timeLeft(until));guard();
         const baseRef={rev:base.rev,wid:base.state?._wid??null,...await evidenceState('base-client-state',base.state,until)};
         const planned=await evidenceState('planned-state',p.state,until);
         wire=Buffer.from(JSON.stringify({state:p.state,baseRev:base.rev,...(base.rev?{baseWid:base.state._wid}:{}),stamped}));
         intent=record('intent',{attemptId:id(),owner:auth.owner,server:auth.server,epochId:auth.epochId,entries:refs,base:baseRef,planned,wire:await v.evidence(wire,until),wireDigest:D('wire',wire),obligations:p.obligations,createdAt:Date.now()});
         guard();await v.record(intent,until);
-        for(const r of entries){fresh.delete(r.body.eventId);conflicts.delete(r.body.eventId)}
         await bounded(()=>hook('after-intent'),timeLeft(until));guard();const before=await assertAuthority(until);await v.check(until);
         requireThat(!sent.has(intent.body.attemptId));sent.add(intent.body.attemptId);
         guard();if(transport){await bounded(()=>transport('/api/data','PUT',wire.toString('utf8')),timeLeft(until));return hold('fault-transport-not-authoritative')}
@@ -55,7 +59,7 @@ export async function driver(fs,server){
         const disposition=[];
         for(const d of result.dispositions)disposition.push({entryId:d.entryId,logicalDigest:d.logicalDigest,decision:d.decision,evidence:await v.evidence(B({proof:d.proof,digest:D('disposition',canonical(d.proof))}),until)});
         const b=intent.body,receipt=record('receipt',{intent:{id:intent.id,bodyDigest:intent.bodyDigest},attemptId:b.attemptId,owner:b.owner,server:b.server,epochId:b.epochId,entries:b.entries,wireDigest:b.wireDigest,ack:result.ack,committed,disposition,localProof:proof,observedAt:Date.now()});
-        await bounded(()=>hook('before-receipt'),timeLeft(until));guard();await assertAuthority(until);await v.check();
+        await bounded(()=>hook('before-receipt'),timeLeft(until));guard();await assertAuthority(until);await v.check(until);
         // Re-observe exact committed identity immediately before publication.
         observation=await capture(wire,ack,before,until);
         requireThat(compare(await v.check(until),intent,observation,auth,proof).status==='RECEIPT_CANDIDATE'&&same(observation.data.body.state,result.doc));
@@ -66,7 +70,7 @@ export async function driver(fs,server){
         const final=receiptStatus(inv,receipt,auth,live,observation);
         if(final.status!=='ACKNOWLEDGED_RETAINED_SCOPED')live.delete(receipt.id);
         return {...final,intent,receipt,ack,observation};
-      }catch{return {...hold('driver-evidence-or-transport'),intent,ack,observation}}
+      }catch{return {...hold('driver-evidence-or-transport'),intent,ack,observation}}finally{busy=false}
     }
   }
 }

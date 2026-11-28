@@ -90,7 +90,7 @@ export function compare(inv,intent,observation,auth,localProof){
     let expected=base;for(const r of es)expected=expected===null?structuredClone(r.body.payload):mergeStates(expected,r.body.payload);
     requireThat(same(expected,w.state)&&same(obligations(es),b.obligations));
     const me=x=>x?.status===200&&x.body?.user?.id===b.owner;
-    requireThat(me(observation.before)&&me(observation.after)&&observation.ack?.status===200);
+    requireThat(me(observation.before)&&me(observation.preRead)&&me(observation.after)&&observation.ack?.status===200);
     const ack=observation.ack.body;requireThat(ack?.ok===true&&wid(ack.wid)&&ack.rev===b.base.rev+1);
     const data=observation.data,rev=observation.rev,doc=data?.body?.state;
     requireThat(data?.status===200&&rev?.status===200&&obj(doc)&&doc._wid===ack.wid&&rev.body.wid===ack.wid&&doc._rev===data.body.rev&&rev.body.rev===doc._rev);

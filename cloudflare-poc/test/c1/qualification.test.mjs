@@ -217,6 +217,7 @@ test('Q2/Q3 actual intent and receipt refusal/partial/silent faults never replay
     const current=await s.get();assert.equal(current.rev,base.rev+(type==='receipt'?1:0));
     const inv=await inventory(a);assert.ok(inv.raw.get(recordPath(entry.id)).equals(B(entry)));assert.equal([...inv.records.values()].filter(r=>r.type==='receipt').length,0);
     assert.equal(inv.complete,mode!=='partial');await verifyLegacy(p,original);
+    assert.equal((await d.attempt([entry],await d.readBase())).status,'RECOVERY_HOLD');assert.equal(faultCount,1);assert.equal((await s.get()).rev,current.rev);
     if(inv.complete){const restart=await driver(a,s);assert.equal((await restart.attempt([entry],await restart.readBase())).status,'RECOVERY_HOLD')}
     else await assert.rejects(()=>driver(a,s));
     assert.equal((await s.get()).rev,current.rev);
@@ -242,4 +243,24 @@ test('Q4 missing historical graph references block fresh planning; metadata loss
   const p=await root(t),a=adapter(p),v=await vault(a),e=await source(v,auth,state()),f=await source(v,auth,state({note:'fresh'}));await v.record(e);await v.record(f);
   const inv=await inventory(a),broken={...inv,raw:new Map(inv.raw)};broken.raw.delete('p7-c1-evidence/'+e.body.source.raw.id+'.bin');
   assert.equal(validGraph(broken),false);assert.equal(plan(broken,auth,new Set([f.body.eventId]),{rev:0,state:null},[refEntry(f)]).status,'RECOVERY_HOLD');
+});
+
+test('Q2 shared absolute deadline refuses expired inventory/publication without new writes',async t=>{
+  const p=await root(t),a=adapter(p),v=await vault(a),e=await source(v,auth,state());
+  const before=await inventory(a),expired=Date.now()-1;
+  assert.equal((await inventory(a,expired)).complete,false);
+  await assert.rejects(()=>publish(a,recordPath(e.id),B(e),expired));
+  await assert.rejects(()=>v.record(e,expired));
+  assert.equal(rawMatches(before,await inventory(a)),true);
+});
+test('Q3 concurrent driver attempt is held and pre-read authority is required', {timeout:180000},async t=>{
+  const s=await server(t,'C1 one attempt owner'),p=await root(t),d=await driver(adapter(p),s),e=await d.event(state()),base=await d.readBase();
+  let enter,release;const reached=new Promise(r=>{enter=r}),gate=new Promise(r=>{release=r});
+  const first=d.attempt([e],base,{hook:async at=>{if(at==='before-intent'){enter();await gate}}});
+  await reached;
+  try{const second=await d.attempt([e],base);assert.equal(second.status,'RECOVERY_HOLD');assert.equal(second.reason,'attempt-in-progress')}finally{release()}
+  const result=await first;assert.equal(result.status,'ACKNOWLEDGED_RETAINED_SCOPED');
+  assert.equal((await s.get()).rev,base.rev+1);
+  const inv=await inventory(adapter(p));assert.equal([...inv.records.values()].filter(r=>r.type==='intent').length,1);
+  assert.equal(compare(inv,result.intent,{...result.observation,preRead:{status:401}},d.auth,{active:[],media:[]}).status,'RECOVERY_HOLD');
 });
