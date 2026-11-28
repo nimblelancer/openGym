@@ -271,7 +271,13 @@ it('actual upstream store: offline conflict, failed acknowledgements, revoke, st
   await otherServer.runner.stop();await home.runner.start();await home.login()
   // Lose the localStorage stash; the native mock's durable file must be sufficient.
   localStorage.removeItem('gym_stash')
+  const nativeOnly=readFile('opengym-stash.json')[stashKey]
+  expect(nativeOnly).toMatchObject({uid:home.uid,server:home.base})
+  expect(Number.isSafeInteger(nativeOnly.at)).toBe(true)
+  expect(ids(nativeOnly.state)).toContain('owed')
+  expect(localStorage.getItem('gym_stash')).toBeNull()
   await connect(home)
+  expect(localStorage.getItem('gym_owner')).toBe(home.uid)
   expect(ids((await home.get()).state)).toEqual(['owed','phone-offline','seed','web-edit'])
   expect(ids(store.getState().S)).toEqual(['owed','phone-offline','seed','web-edit'])
   expect(readFile('opengym-stash.json')?.[stashKey]||null).toBe(null)
