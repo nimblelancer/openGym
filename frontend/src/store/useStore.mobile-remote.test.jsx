@@ -874,3 +874,30 @@ it('Phase 7: edit during stash publication prevents logout and preserves the new
     expect(ids(readFile('opengym-stash.json')[BASE + '|u1'].state.workouts)).toContain('during-stash')
   } finally { release(); h.holdStashWrite = null }
 })
+
+it('Phase 7: malformed owner-bound stash is not auto-adopted and valid explicit recovery still works', async () => {
+  pairedPhone()
+  const srv = serverWith(SERVER_STATE)
+  const key = BASE + '|' + USER.id
+  const valid = { server: BASE, uid: USER.id, name: USER.name, at: 1234,
+    state: { ...clone(SERVER_STATE), workouts: [...SERVER_STATE.workouts, workout('recover-me', '2026-09-15')] } }
+  const bad = JSON.stringify({ [key]: { ...valid, uid: 'foreign', at: 9999,
+    state: { ...clone(SERVER_STATE), workouts: [workout('foreign-workout', '2026-09-16')] } } })
+  const good = JSON.stringify({ [key]: valid })
+  localStorage.setItem('gym_stash', bad)
+  h.files.set('DATA/opengym-stash.json', good)
+  const store = await freshStore()
+  await store.getState().boot()
+  expect(ids(store.getState().S.workouts)).not.toContain('foreign-workout')
+  expect(ids(srv.doc.workouts)).not.toContain('foreign-workout')
+  expect(srv.puts.every(p => !ids(p.state.workouts).includes('foreign-workout'))).toBe(true)
+  expect(localStorage.getItem('gym_stash')).toBe(bad)
+  expect(h.files.get('DATA/opengym-stash.json')).toBe(good)
+  expect(localStorage.getItem('gym_owner')).toBe(USER.id)
+  localStorage.setItem('gym_stash', good) // explicit synthetic correction
+  await store.getState().connectToServer(BASE, 'ABCD2345', async () => false)
+  expect(ids(store.getState().S.workouts)).toContain('recover-me')
+  expect(ids(srv.doc.workouts)).toContain('recover-me')
+  expect(ids(srv.doc.workouts)).not.toContain('foreign-workout')
+  expect(await store.getState().keptState(BASE, USER.id)).toBeNull()
+})

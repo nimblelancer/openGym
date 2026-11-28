@@ -1408,9 +1408,12 @@ export const useStore = create((set, get) => {
   const applyStash = async () => {
     const user = get().user
     if (!user) return
-    const tok = currentSession()
-    const all = await readStashes()
-    if (!isCurrent(tok)) return
+    const tok = currentSession(), owner = readOwner()
+    // Never auto-adopt a malformed entry (including a foreign uid under
+    // this account's key). Keep both raw copies for explicit recovery.
+    let all
+    try { all = await withStashLock(() => readStashes({ strict: true })) } catch { return }
+    if (!isCurrent(tok) || readOwner() !== owner || owner !== user.id) return
     const exact = stashKey(serverBase(), user.id)
     const keys = Object.keys(all).filter(k => !all[k]?.cleared && (k === exact || (all[k]?.uid === user.id && !all[k]?.server)))
     if (!keys.length) return
@@ -1442,7 +1445,7 @@ export const useStore = create((set, get) => {
     await withStashLock(async () => {
       let now
       try { now = await readStashes({ strict: true }) } catch { return }
-      if (!isCurrent(tok)) return
+      if (!isCurrent(tok) || readOwner() !== owner || (MOBILE && get().unsyncedChanges().owed)) return
       await clearStashes(now, keys.filter(k => sameStash(now[k], all[k])))
     })
   }

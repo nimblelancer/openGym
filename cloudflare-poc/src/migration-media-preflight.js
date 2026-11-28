@@ -96,3 +96,60 @@ export async function auditMigrationMedia({owner,snapshots,readLocal,readBackup,
   // restore, state revisions, user consent and official native delivery remain gates.
   return {owner,records,issues:[...issues].sort(),knownMediaVerified:issues.size===0,cutoverAuthorized:false,minimumDestination:{bytes:minimumBytes,count:uploadable.size}};
 }
+
+
+// Local-only, read-only R2 qualification. Do not expose this helper as a route.
+// Enumerate the exact owner prefix, never trust supplied hash lists as complete.
+// Compare listing generations before/after byte audit; callers still must freeze
+// writers and supply the authoritative owner/state revision fence. This is not
+// a transactional R2 snapshot or proof of all external devices.
+export async function auditOwnerBucketMedia({bucket,owner,isCurrent,adapterMs=15000,totalMs=180000,...args}){
+  if(typeof owner!=='string'||!/^[A-Za-z0-9_-]{1,128}$/.test(owner)||typeof isCurrent!=='function'||
+     typeof bucket?.list!=='function'||typeof bucket?.get!=='function'||
+     !Number.isSafeInteger(adapterMs)||adapterMs<1||adapterMs>30000||!Number.isSafeInteger(totalMs)||totalMs<1||totalMs>300000||
+     args.destinationInventory!=null||args.readDestination!=null)throw Error('invalid owner bucket audit');
+  const prefix='private/v1/'+owner+'/',deadline=performance.now()+totalMs;
+  const remaining=()=>Math.floor(deadline-performance.now());
+  const step=fn=>bounded(fn,Math.min(adapterMs,remaining()));
+  const fence=async()=>{if(!await step(signal=>isCurrent(owner,{signal})))throw Error('migration snapshot or owner changed');};
+  const enumerate=async()=>{
+    const rows=new Map(),cursors=new Set();let cursor;
+    for(let page=0;page<MAX_HASHES+1;page++){
+      await fence();
+      const list=await step(()=>bucket.list({prefix,limit:100,include:['httpMetadata','customMetadata'],...(cursor?{cursor}:{})}));
+      if(!Array.isArray(list?.objects)||typeof list.truncated!=='boolean'||list.objects.length>100)throw Error('invalid owner bucket listing');
+      for(const o of list.objects){
+        const h=typeof o?.key==='string'&&o.key.startsWith(prefix)?o.key.slice(prefix.length):null;
+        const mime=o?.httpMetadata?.contentType;
+        if(!validHash(h)||rows.has(h)||rows.size>=MAX_HASHES||!Object.hasOwn(MEDIA_MIMES,mime)||
+           !Number.isSafeInteger(o.size)||o.size<1||o.size>MAX_BYTES||o.customMetadata?.sha256!==h||
+           typeof o.version!=='string'||!o.version||typeof o.etag!=='string'||!o.etag)throw Error('invalid owner bucket object');
+        rows.set(h,{hash:h,mime,size:o.size,version:o.version,etag:o.etag});
+      }
+      await fence();
+      if(!list.truncated)return [...rows.values()].sort((a,b)=>a.hash.localeCompare(b.hash));
+      if(typeof list.cursor!=='string'||!list.cursor||cursors.has(list.cursor)||!list.objects.length)throw Error('invalid owner bucket cursor');
+      cursor=list.cursor;cursors.add(cursor);
+    }
+    throw Error('owner bucket listing exceeds bound');
+  };
+  const initial=await enumerate(),byHash=new Map(initial.map(row=>[row.hash,row]));
+  const readDestination=async(h,{signal})=>{
+    const expected=byHash.get(h);
+    if(!expected)return null;
+    const o=await bucket.get(prefix+h);
+    if(signal.aborted||!o||o.key!==prefix+h||o.version!==expected.version||o.etag!==expected.etag||
+       o.size!==expected.size||o.httpMetadata?.contentType!==expected.mime||o.customMetadata?.sha256!==h||!o.body){
+      try{await o?.body?.cancel();}catch{}
+      throw Error('owner bucket object changed');
+    }
+    return {size:o.size,type:expected.mime,stream:()=>o.body};
+  };
+  const budget=remaining();
+  if(budget<1)throw timeoutError();
+  const report=await auditMigrationMedia({...args,owner,isCurrent,readDestination,destinationInventory:{owner,rows:initial},adapterMs,totalMs:budget});
+  const final=await enumerate();
+  if(JSON.stringify(initial)!==JSON.stringify(final))throw Error('owner bucket inventory changed');
+  await fence();
+  return {...report,ownerBucketListingStable:true,enumeratedDestinationCount:initial.length,cutoverAuthorized:false};
+}

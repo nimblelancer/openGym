@@ -8,7 +8,8 @@ import {request} from 'node:http';
 import {setTimeout as sleep} from 'node:timers/promises';
 import {DatabaseSync} from 'node:sqlite';
 import {MediaLifecycle,GRACE_MS,DELETE_BATCH} from '../src/media-lifecycle.js';
-import {auditMigrationMedia} from '../src/migration-media-preflight.js';
+import {auditMigrationMedia,auditOwnerBucketMedia} from '../src/migration-media-preflight.js';
+import {Miniflare} from 'miniflare';
 import {localRunner} from './local-runner.mjs';
 import {authenticator} from './auth-fixture.mjs';
 import {inspect,parseRange,boundedBytes,readMediaJson,handleMedia,inventory} from '../src/media.js';
@@ -493,6 +494,53 @@ test('Phase 7: migration audit deadlines abort stalled adapters and streams with
     isCurrent:async(o,{signal})=>++checks===1?true:new Promise(()=>{signal.addEventListener('abort',()=>{postReadAborted=true;},{once:true});})}),e=>e.code==='audit-timeout');
   assert.equal(checks,2);assert.equal(postReadAborted,true);assert.equal(later,0);
   console.log('PHASE7_AUDIT_ADAPTER_DEADLINES PASS');
+});
+
+test('Phase 7: bounded owner bucket enumeration with real local R2 and independent backup bytes',{timeout:60000},async()=>{
+  const mf=new Miniflare({modules:true,script:'export default {fetch(){return new Response("local synthetic")}}',compatibilityDate:'2026-01-01',r2Buckets:['MEDIA']});
+  try{
+    const bucket=await mf.getR2Bucket('MEDIA'),owner='syntheticOwner01',foreign='syntheticOwner02',prefix='private/v1/'+owner+'/';
+    const copies=new Map();
+    const put=async(uid,b)=>{
+      const h=sha(b),mime='image/png';
+      await bucket.put('private/v1/'+uid+'/'+h,b,{httpMetadata:{contentType:mime},customMetadata:{sha256:h}});
+      return {hash:h,mime,size:b.length,kind:'image'};
+    };
+    const primary=await put(owner,image);copies.set(primary.hash,new Blob([image],{type:primary.mime}));
+    // 101 owner objects require pagination (100 per page); only one is
+    // referenced. Remaining objects model already retained remote bytes.
+    for(let i=0;i<100;i++){
+      const bytes=Buffer.concat([image,Buffer.from(String(i))]),m=await put(owner,bytes);
+      copies.set(m.hash,new Blob([bytes],{type:m.mime}));
+    }
+    const unrelated=await put(foreign,Buffer.from('foreign synthetic'));
+    let reads=0,lists=0;
+    const observed={list:async opts=>{assert.equal(opts.prefix,prefix);lists++;return bucket.list(opts);},get:async key=>{assert.ok(key.startsWith(prefix));reads++;return bucket.get(key);}};
+    const args={owner,bucket:observed,snapshots:[{owner,state:{customEx:[{media:primary}]}}],readLocal:async()=>null,readBackup:async h=>copies.get(h)||null,isCurrent:async uid=>uid===owner};
+    const result=await auditOwnerBucketMedia(args);
+    assert.equal(result.ownerBucketListingStable,true);assert.equal(result.enumeratedDestinationCount,101);
+    assert.equal(result.knownMediaVerified,true);assert.equal(result.cutoverAuthorized,false);
+    assert.equal(result.minimumDestination.count,101);assert.equal(result.minimumDestination.bytes,[...copies.values()].reduce((n,b)=>n+b.size,0));
+    assert.equal(reads,101);assert.equal(lists,4);assert.ok(result.records.every(r=>r.backup==='verified'&&r.destination==='verified'));
+    assert.ok(!result.records.some(r=>r.hash===unrelated.hash));
+    const retained=[...copies.keys()].find(h=>h!==primary.hash);
+    const missing=await auditOwnerBucketMedia({...args,readBackup:async h=>h===retained?null:copies.get(h)});
+    assert.equal(missing.knownMediaVerified,false);assert.ok(missing.issues.includes('backup-not-verified'));
+    let changed=false;
+    await assert.rejects(auditOwnerBucketMedia({...args,readBackup:async h=>{
+      if(!changed){changed=true;await put(owner,Buffer.from('new retained object'));}
+      return copies.get(h);
+    }}),/inventory changed/);
+    // Faulty list adapter must fail closed rather than strip an unrelated prefix.
+    const foreignList=await bucket.list({prefix:'private/v1/'+foreign+'/',include:['httpMetadata','customMetadata']});
+    await assert.rejects(auditOwnerBucketMedia({...args,bucket:{...observed,list:async()=>foreignList}}),/invalid owner bucket object/);
+    await assert.rejects(auditOwnerBucketMedia({...args,bucket:{...observed,list:async()=>({objects:[],truncated:true,cursor:'loop'})}}),/invalid owner bucket cursor/);
+    let later=0;
+    await assert.rejects(auditOwnerBucketMedia({...args,adapterMs:30,bucket:{...observed,list:async()=>new Promise(()=>{})},readBackup:async()=>{later++;return null;}}),e=>e.code==='audit-timeout');
+    assert.equal(later,0);
+    assert.equal((await bucket.get('private/v1/'+foreign+'/'+unrelated.hash)).size,unrelated.size);
+    console.log('PHASE7_LOCAL_R2_OWNER_INVENTORY_FENCE PASS');
+  }finally{await mf.dispose();}
 });
 
 // A disposable encrypted backup/restore qualification, not an export format,
