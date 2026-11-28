@@ -5,6 +5,8 @@ import {readFile,readdir,mkdtemp,writeFile,rm} from 'node:fs/promises';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 import {request} from 'node:http';
+import {execFile} from 'node:child_process';
+import {promisify} from 'node:util';
 import {setTimeout as sleep} from 'node:timers/promises';
 import {DatabaseSync} from 'node:sqlite';
 import {MediaLifecycle,GRACE_MS,DELETE_BATCH} from '../src/media-lifecycle.js';
@@ -563,6 +565,53 @@ test('Phase 7: bounded owner bucket enumeration with real local R2 and independe
     }),/migration snapshot or owner changed/);
     assert.equal(backupCalls,1);assert.equal(destinationReads,0);
     console.log('PHASE7_LOCAL_R2_GENERATION_AND_BACKUP_BYTES_FENCE PASS');
+    // Actual separate OS process changes the synthetic owner/generation
+    // authority file while the auditor is awaiting an independent disk read.
+    // No claim of a production authority, native transaction or atomic R2 snapshot.
+    const disk=await mkdtemp(join(tmpdir(),'opengym-p7-process-fence-'));
+    try{
+      const fenceFile=join(disk,'authority.json');
+      const baseline={owner,generation:1};
+      const publish=promisify(execFile);
+      for(const [h,b] of copies)await writeFile(join(disk,h),Buffer.from(await b.arrayBuffer()),{flag:'wx'});
+      const diskHashes=(await readdir(disk)).sort();
+      assert.deepEqual(diskHashes,[...copies.keys()].sort());
+      assert.equal(diskHashes.length,101);
+      const diskRead=async h=>{
+        assert.ok(/^[a-f0-9]{64}$/.test(h));
+        return new Blob([await readFile(join(disk,h))],{type:'image/png'});
+      };
+      const diskFence=async uid=>{
+        const current=JSON.parse(await readFile(fenceFile,'utf8'));
+        return uid===owner&&current.owner===owner&&current.generation===baseline.generation;
+      };
+      await writeFile(fenceFile,JSON.stringify(baseline));
+      const stable=await auditOwnerBucketMedia({...args,isCurrent:diskFence,readBackup:diskRead});
+      assert.equal(stable.knownMediaVerified,true);
+      assert.equal(stable.enumeratedDestinationCount,101);
+      assert.ok(stable.records.every(r=>r.backup==='verified'&&r.destination==='verified'));
+      assert.equal(stable.cutoverAuthorized,false);
+      for(const next of [{owner,generation:2},{owner:foreign,generation:1}]){
+        await writeFile(fenceFile,JSON.stringify(baseline));
+        let backupCalls=0,destinationReads=0;
+        await assert.rejects(auditOwnerBucketMedia({...args,isCurrent:diskFence,
+          bucket:{...observed,get:async key=>{destinationReads++;return observed.get(key);}},
+          readBackup:async h=>{
+            backupCalls++;
+            const b=await diskRead(h);
+            const {stdout}=await publish(process.execPath,['-e',
+              'const fs=require("node:fs");const [p,v]=process.argv.slice(1);fs.writeFileSync(p+".next",v);fs.renameSync(p+".next",p);process.stdout.write(String(process.pid));',
+              fenceFile,JSON.stringify(next)],{timeout:5000,maxBuffer:1024});
+            assert.ok(Number.isSafeInteger(Number(stdout))&&Number(stdout)>0);
+            assert.notEqual(Number(stdout),process.pid);
+            assert.deepEqual(JSON.parse(await readFile(fenceFile,'utf8')),next);
+            return b;
+          }
+        }),/migration snapshot or owner changed/);
+        assert.equal(backupCalls,1);assert.equal(destinationReads,0);
+      }
+      console.log('PHASE7_SEPARATE_PROCESS_OWNER_GENERATION_FENCE PASS');
+    }finally{await rm(disk,{recursive:true,force:true});}
     let changed=false;
     await assert.rejects(auditOwnerBucketMedia({...args,readBackup:async h=>{
       if(!changed){changed=true;await put(owner,Buffer.from('new retained object'));}

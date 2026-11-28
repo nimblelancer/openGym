@@ -62,3 +62,40 @@ describe('another account on a copy whose session ended', () => {
     expect(await useStore.getState().keptChanges()).toEqual([])
   })
 })
+
+// A required preservation gate, not an expected-failure test. The web
+// synchronous account switch must leave the previous durable copy intact if
+// neither attempted stash publication succeeds. No real account or API writes.
+it('Phase 7: legacy synchronous account switch refuses loss of the sole durable copy', async () => {
+  olgasCopy()
+  const previous = JSON.stringify(useStore.getState().S)
+  localStorage.setItem('gym_state_v1', previous)
+  const storage = localStorage
+  let refusals = 0
+  vi.stubGlobal('localStorage', {
+    getItem: k => storage.getItem(k),
+    setItem(k, value) {
+      if (k === 'gym_stash') { refusals++; throw Error('synthetic storage refusal') }
+      storage.setItem(k, value)
+    },
+    removeItem: k => storage.removeItem(k),
+    key: i => storage.key(i),
+    get length() { return storage.length },
+    clear: () => storage.clear(),
+  })
+  try {
+    let blocked = false
+    try { useStore.getState().setUser({ id: 'yuri', name: 'Yuri' }) } catch { blocked = true }
+    expect(refusals).toBeGreaterThan(0)
+    const retained = storage.getItem('gym_state_v1') === previous &&
+      ids(useStore.getState().S.workouts).join(',') === 'o1,o2' &&
+      storage.getItem('gym_owner') === 'olga' && useStore.getState().user === null
+    console.log('PHASE7_LEGACY_SYNC_PUBLICATION_OBSERVATION', JSON.stringify({
+      blocked, retained, refusals, ownerRetained: storage.getItem('gym_owner') === 'olga',
+      durableCopyRetained: storage.getItem('gym_state_v1') === previous
+    }))
+    expect(blocked && retained).toBe(true)
+    expect(api.mock.calls.some(([, o]) => o?.method === 'PUT')).toBe(false)
+    console.log('PHASE7_LEGACY_SYNC_PUBLICATION_FAIL_CLOSED PASS')
+  } finally { vi.unstubAllGlobals() }
+})
