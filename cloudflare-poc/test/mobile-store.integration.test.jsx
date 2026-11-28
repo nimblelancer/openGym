@@ -24,10 +24,12 @@ vi.mock('@capacitor/filesystem', () => ({
   Encoding: { UTF8: 'utf8' },
   Filesystem: {
     readdir: async ({ path, directory }) => {
+      h.listCalls = (h.listCalls || 0) + 1
       const prefix = directory + '/' + (path ? path + '/' : '')
       return { files: [...h.files.keys()].filter(k => k.startsWith(prefix)).map(k => k.slice(prefix.length)).filter(name => name && !name.includes('/')).map(name => ({ name, type: 'file' })) }
     },
     readFile: async ({ path, directory }) => {
+      if (path === 'opengym-stash.json') h.stashReadCalls = (h.stashReadCalls || 0) + 1
       const k = directory + '/' + path
       if (!h.files.has(k)) throw new Error('File does not exist')
       return { data: h.files.get(k) }
@@ -276,7 +278,14 @@ it('actual upstream store: offline conflict, failed acknowledgements, revoke, st
   expect(Number.isSafeInteger(nativeOnly.at)).toBe(true)
   expect(ids(nativeOnly.state)).toContain('owed')
   expect(localStorage.getItem('gym_stash')).toBeNull()
+  const {readJsonFile}=await import('../lib/mobile.js')
+  const beforeNativeRead=h.stashReadCalls||0
+  expect(await readJsonFile('opengym-stash.json',{strict:true})).toEqual(readFile('opengym-stash.json'))
+  expect(h.stashReadCalls).toBeGreaterThan(beforeNativeRead)
+  console.log('PHASE7_NATIVE_DIRECT_READ_CONTROL PASS')
+  const beforeRecoveryRead=h.stashReadCalls
   await connect(home)
+  console.log('PHASE7_NATIVE_RECOVERY_MOCK_READS', (h.stashReadCalls||0)-beforeRecoveryRead)
   expect(localStorage.getItem('gym_owner')).toBe(home.uid)
   expect(ids((await home.get()).state)).toEqual(['owed','phone-offline','seed','web-edit'])
   expect(ids(store.getState().S)).toEqual(['owed','phone-offline','seed','web-edit'])

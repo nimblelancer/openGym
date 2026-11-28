@@ -122,7 +122,24 @@ export async function readJsonFile(name, { strict = false, load = () => import('
       if (!strict) return null
       // Absence still requires positive directory evidence. If enumeration
       // fails, is malformed or lists the file, the read error is not absence.
-      const list = await Filesystem.readdir({ path: '', directory: Directory.Data })
+      let list
+      try { list = await Filesystem.readdir({ path: '', directory: Directory.Data }) }
+      catch (listError) {
+        if (import.meta.env.MODE === 'test') {
+          const kind = e => {
+            const msg = String(e?.message || '')
+            if (/not implemented/i.test(msg)) return 'not-implemented'
+            if (/not available|unavailable/i.test(msg)) return 'unavailable'
+            if (/not exist|not found|no such file/i.test(msg)) return 'not-found'
+            if (/permission|denied/i.test(msg)) return 'permission'
+            if (/not supported/i.test(msg)) return 'not-supported'
+            if (/not a function/i.test(msg)) return 'not-a-function'
+            return 'other'
+          }
+          console.log('PHASE7_STRICT_NATIVE_ADAPTER_FAILURE', JSON.stringify({read:kind(readError),list:kind(listError),readOwn:Object.hasOwn(Filesystem,'readFile'),listOwn:Object.hasOwn(Filesystem,'readdir')}))
+        }
+        throw listError
+      }
       if (!Array.isArray(list?.files)) throw new Error('invalid native directory inventory')
       const names = list.files.map(f => typeof f === 'string' ? f : f?.name)
       if (names.some(n => typeof n !== 'string' || !n)) throw new Error('invalid native directory inventory')

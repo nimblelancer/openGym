@@ -1193,7 +1193,7 @@ export const useStore = create((set, get) => {
         throw new Error('invalid stash entry')
     }
   }
-  const readStashes = async ({ strict = false } = {}) => {
+  const readStashes = async ({ strict = false, load } = {}) => {
     let all = {}
     try {
       const raw = localStorage.getItem(STASH_KEY)
@@ -1202,7 +1202,7 @@ export const useStore = create((set, get) => {
       if (strict) validateStashInventory(all)
     } catch (e) { if (strict) throw e; all = {} }
     if (MOBILE) {
-      const f = await readJsonFile(STASH_FILE, { strict })
+      const f = await readJsonFile(STASH_FILE, { strict, load })
       if (strict && f !== null) validateStashInventory(f)
       if (f && typeof f === 'object') {
         // Either medium may have refused the last write. Do not let an older native
@@ -1414,11 +1414,18 @@ export const useStore = create((set, get) => {
     // Only Vitest emits reason codes. Never log owners, server addresses,
     // stash keys, state contents or arbitrary exception messages.
     const trace = reason => { if (import.meta.env.MODE === 'test') console.log('PHASE7_STASH_ADOPTION_GATE', reason) }
-    let all, entered = false, readDone = false
+    let all, entered = false, readDone = false, load
     try {
+      // Resolve the same native adapter in the adoption caller, not from
+      // inside a potentially foreign Web Locks callback execution context.
+      // Actual file reads and validation still occur under the lock.
+      if (MOBILE) {
+        const native = await import('@capacitor/filesystem')
+        load = async () => native
+      }
       await withStashLock(async () => {
         entered = true
-        all = await readStashes({ strict: true })
+        all = await readStashes({ strict: true, load })
         readDone = true
       })
     } catch (e) {
@@ -1469,7 +1476,7 @@ export const useStore = create((set, get) => {
     // Read once more, so a stash written meanwhile is not written over with the older read.
     await withStashLock(async () => {
       let now
-      try { now = await readStashes({ strict: true }) } catch { return }
+      try { now = await readStashes({ strict: true, load }) } catch { return }
       if (!isCurrent(tok) || readOwner() !== owner || (MOBILE && get().unsyncedChanges().owed)) return
       await clearStashes(now, keys.filter(k => sameStash(now[k], all[k])))
     })
