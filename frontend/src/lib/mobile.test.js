@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { isoOf } from './format.js'
-import { buildReminderNotifications } from './mobile.js'
+import { buildReminderNotifications, nativeMediaSnapshots } from './mobile.js'
 
 const push = { id: 'push', name: 'Push' }
 const pull = { id: 'pull', name: 'Pull' }
@@ -101,4 +101,27 @@ describe('buildReminderNotifications', () => {
     expect(iso(n[1].schedule.at)).toBe(iso(new Date(2026, 8, 9)))   // Tuesday has its workout
     expect(n[1].body).toContain('Pull')
   })
+})
+
+it('Phase 7: preservation reads both native mirrors, and distinguishes absence from failure', async () => {
+  const main = { _ts: 1, customEx: [{ id: 'older' }] }
+  const next = { _ts: 2, customEx: [{ id: 'newer' }] }
+  const files = new Map([['opengym-state.json', JSON.stringify(main)], ['opengym-state.next.json', JSON.stringify(next)]])
+  const load = async () => ({
+    Directory: { Data: 'DATA' }, Encoding: { UTF8: 'utf8' },
+    Filesystem: {
+      readdir: async () => ({ files: [...files.keys()].map(name => ({ name })) }),
+      readFile: async ({ path }) => ({ data: files.get(path) })
+    }
+  })
+  expect(await nativeMediaSnapshots(load)).toEqual([main, next])
+  files.set('opengym-state.next.json', '{broken')
+  await expect(nativeMediaSnapshots(load)).rejects.toThrow()
+  files.set('opengym-state.next.json', '[]')
+  await expect(nativeMediaSnapshots(load)).rejects.toThrow('invalid native state mirror')
+  files.delete('opengym-state.next.json')
+  expect(await nativeMediaSnapshots(load)).toEqual([main])
+  files.clear()
+  expect(await nativeMediaSnapshots(load)).toEqual([])
+  await expect(nativeMediaSnapshots(async () => { throw Error('unavailable') })).rejects.toThrow('unavailable')
 })

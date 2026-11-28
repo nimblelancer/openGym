@@ -56,6 +56,23 @@ const FILE = 'opengym-state.json'
 // is the later one (`_ts`) is the copy.
 const FILE_NEW = 'opengym-state.next.json'
 
+// Preservation callers need both candidate mirrors, not only the newest
+// boot snapshot. Any unreadable existing file makes deletion unsafe.
+export async function nativeMediaSnapshots(load = () => import('@capacitor/filesystem')) {
+  const { Filesystem, Directory, Encoding } = await load()
+  const list = await Filesystem.readdir({ path: '', directory: Directory.Data })
+  if (!Array.isArray(list.files)) throw new Error('invalid native directory inventory')
+  const names = new Set(list.files.map(f => typeof f === 'string' ? f : f?.name))
+  const out = []
+  for (const path of [FILE, FILE_NEW]) {
+    if (!names.has(path)) continue
+    const state = JSON.parse((await Filesystem.readFile({ path, directory: Directory.Data, encoding: Encoding.UTF8 })).data)
+    if (!state || typeof state !== 'object' || Array.isArray(state)) throw new Error('invalid native state mirror')
+    out.push(state)
+  }
+  return out
+}
+
 export async function nativeLoad() {
   try {
     const { Filesystem, Directory, Encoding } = await import('@capacitor/filesystem')

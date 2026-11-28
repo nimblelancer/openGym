@@ -124,3 +124,16 @@ it('Phase 7: unreadable stash inventory is not an empty preservation set', async
   localStorage.removeItem("gym_stash")
   expect(await useStore.getState().stashedMediaHashes()).toEqual(new Set())
 })
+
+it('Phase 7: sign-out-all does not revoke session if required stash inventory is unreadable', async () => {
+  signedIn({ ...clone(PROFILE), active: { id: 'active', entries: [] } }, 3)
+  localStorage.setItem('gym_stash', '{broken')
+  const before = JSON.stringify(useStore.getState().S)
+  // settle may attempt data sync; no logout request may precede preservation.
+  api.mockRejectedValue(new Error('synthetic offline'))
+  const result = await useStore.getState().signOutAll({ force: true })
+  expect(result).toMatchObject({ owed: true, stashed: false })
+  expect(api.mock.calls.some(([path]) => path === '/api/logout/all')).toBe(false)
+  expect(useStore.getState().user?.id).toBe('u1')
+  expect(JSON.stringify(useStore.getState().S)).toBe(before)
+})

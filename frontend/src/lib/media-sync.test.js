@@ -568,3 +568,53 @@ it('Phase 7: newly stashed original cannot be evicted using stale inventory', as
   expect(api).toHaveBeenCalledTimes(1)
   expect(await (await reopened.get(h)).blob.text()).toBe('original')
 })
+
+it('Phase 7: same-owner server switch invalidates in-flight inventory ACK', async () => {
+  const h = hex('a')
+  await put(h)
+  const app = appStore({ sync: { server: 'https://old.invalid' }, S: { customEx: [{ media: refOf(h) }] } })
+  api.mockImplementationOnce(async () => { app.setState({ sync: { server: 'https://new.invalid' } }); return { missing: [] } })
+  const sync = make(app)
+  await sync.syncMedia()
+  expect((await media.get(h)).pending).toBe(true)
+  expect(apiUpload).not.toHaveBeenCalled()
+  await sync.syncMedia()
+  expect(apiUpload).toHaveBeenCalledTimes(1)
+})
+
+it('Phase 7: session generation changes invalidate dedupe with identical owner and refs', async () => {
+  const h = hex('a')
+  await put(h)
+  let generation = {}
+  const app = appStore({ S: { customEx: [{ media: refOf(h) }] }, mediaSessionIdentity: () => generation })
+  const sync = make(app)
+  await sync.syncMedia()
+  await sync.syncMedia()
+  expect(api).toHaveBeenCalledTimes(1)
+  generation = {}
+  await sync.syncMedia()
+  expect(api).toHaveBeenCalledTimes(2)
+})
+
+it('Phase 7: persisted owner change during inventory prevents ACK in stale tab', async () => {
+  const h = hex('a')
+  await put(h)
+  storage.setItem('gym_owner', 'u1')
+  api.mockImplementationOnce(async () => { storage.setItem('gym_owner', 'u2'); return { missing: [] } })
+  const sync = make(appStore({ S: { customEx: [{ media: refOf(h) }] } }))
+  await sync.syncMedia()
+  await sync.syncMedia()
+  expect(api).toHaveBeenCalledTimes(1)
+  expect((await media.get(h)).pending).toBe(true)
+})
+
+it('Phase 7: GC protects references from both native mirrors', async () => {
+  const a = hex('a'), b = hex('b'), c = hex('c')
+  await put(a); await put(b); await put(c)
+  clock += 2 * 3600000
+  const mirror = [a, b].map(h => ({ customEx: [{ media: refOf(h) }] }))
+  await make(appStore({ user: null }), { nativeLoad: async () => mirror }).localMediaGc()
+  expect(await media.has(a)).toBe(true)
+  expect(await media.has(b)).toBe(true)
+  expect(await media.has(c)).toBe(false)
+})

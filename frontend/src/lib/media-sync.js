@@ -25,7 +25,7 @@ import { mediaStore as sharedStore } from './media-store.js'
 import { api, apiBlob, apiUpload } from './api.js'
 import { prefetchAllowed } from './media-prefetch.js'
 import { MB, BG_UPLOAD_METERED_MAX_MB, LOCAL_CACHE_MAX_MB, LOCAL_GC_GRACE_MS, limitsFrom, fmtMB } from './media-limits.js'
-import { MOBILE, nativeLoad } from './mobile.js'
+import { MOBILE, nativeMediaSnapshots } from './mobile.js'
 import { registerMediaRunner, publishMediaStatus, pendingRefCount, loadPending } from './media-owed.js'
 import { t } from './i18n-core.js'
 
@@ -68,7 +68,7 @@ export function createMediaSync(deps = {}) {
     // The phone's file mirror of the state (lib/mobile.js), read by the local clean-up: on a
     // phone it is the durable copy and can be newer than localStorage (evicted WebView storage,
     // a write refused for room), so what it refers to is kept even if memory does not know it yet.
-    nativeLoad: MOBILE ? () => nativeLoad() : null,
+    nativeLoad: MOBILE ? () => nativeMediaSnapshots() : null,
     ...deps
   }
   let store = d.store || null
@@ -93,8 +93,17 @@ export function createMediaSync(deps = {}) {
      calls off whatever it did not wait for. */
   let epoch = 0
   const accountOf = () => store?.getState().user?.id ?? null
-  const ticketFor = () => ({ uid: accountOf(), epoch })
-  const current = tk => tk.epoch === epoch && tk.uid != null && accountOf() === tk.uid
+  const serverOf = () => store?.getState().sync?.server ?? null
+  const identityOf = () => store?.getState().mediaSessionIdentity?.()
+  const persistedOwner = () => {
+    try { return d.storage?.getItem('gym_owner') ?? null } catch { return undefined }
+  }
+  const ticketFor = () => ({ uid: accountOf(), epoch, server: serverOf(), identity: identityOf(), owner: persistedOwner() })
+  const sameSession = tk => tk.epoch === epoch && accountOf() === tk.uid &&
+    tk.server === serverOf() && tk.identity !== null && tk.identity === identityOf() &&
+    tk.owner !== undefined && tk.owner === persistedOwner() && (tk.owner === null || tk.owner === tk.uid)
+  const current = tk => tk.uid != null && sameSession(tk)
+  let runIdentity = null
   const forAccount = uid => ({ 'X-OpenGym-Account': String(uid) })
   const Gone = () => Object.assign(new Error('account changed'), { code: 'account-changed' })
   const mismatch = e => e?.code === 'account-mismatch' || e?.data?.code === 'account-mismatch'
@@ -127,6 +136,15 @@ export function createMediaSync(deps = {}) {
     const st = store.getState()
     if (!st.user) { await publishPending({ usage: null }); return }
     const still = () => { if (!current(tk)) throw Gone() }
+    still()
+    // Dedupe, backoff and quota observations are not transferable between
+    // server/session generations, even when the account ID and refs match.
+    if (!runIdentity || !sameSession(runIdentity)) {
+      lastRun = { refs: '', at: 0, complete: false }
+      retryNotBefore = 0
+      upBackoff.clear(); missBackoff.clear(); rejectTold.clear(); quotaTold = false
+      runIdentity = tk
+    }
     const headers = forAccount(tk.uid)
     // A boot without a network leaves the config unknown; ask again rather than decide on nothing.
     let cfg = st.config
@@ -250,6 +268,7 @@ export function createMediaSync(deps = {}) {
         break
       }
     }
+    still()
     lastRun = { refs: key, at: d.now(), complete: !stopped && !deferred && !skipped }
     if (usage && added) usage = { ...usage, bytes: (usage.bytes || 0) + added }
     await publishPending({ usage, deferred, rejected, unavailable })
@@ -352,7 +371,7 @@ export function createMediaSync(deps = {}) {
     await withLock('opengym-media', async () => {
       // Started under another account than the one signed in now: its idea of what is live is
       // not this one's, so nothing is deleted on it.
-      const mine = () => tk.epoch === epoch && accountOf() === tk.uid
+      const mine = () => sameSession(tk)
       if (!mine()) return
       const st = store.getState()
       const live = keptHashes(st.S)
@@ -388,8 +407,8 @@ export function createMediaSync(deps = {}) {
       // to reach localStorage lives only there and in memory, and memory may already have moved on.
       try {
         if (d.nativeLoad) {
-          const saved = await d.nativeLoad()
-          if (saved) {
+          const result = await d.nativeLoad()
+          for (const saved of Array.isArray(result) ? result : result ? [result] : []) {
             for (const h of keptHashes(saved)) live.add(h)
             protectLocal(saved)
           }
@@ -406,10 +425,12 @@ export function createMediaSync(deps = {}) {
           if (!unchanged() || d.storage?.getItem(PERSISTED_KEY) !== persisted) return false
           if (typeof st.stashedMediaHashes === 'function' && (await st.stashedMediaHashes()).has(h)) return false
           if (d.nativeLoad) {
-            const saved = await d.nativeLoad()
-            if (saved && (keptHashes({ active: saved.active }).has(h) ||
-                stateMediaRefs(saved).some(m => m.local === true && (m.hash === h || m.poster?.hash === h)) ||
-                (!pressure && keptHashes(saved).has(h)))) return false
+            const result = await d.nativeLoad()
+            for (const saved of Array.isArray(result) ? result : result ? [result] : []) {
+              // A native mirror may contain the sole copy of a reference not
+              // yet published by the current state. Preserve it even under pressure.
+              if (keptHashes(saved).has(h)) return false
+            }
           }
           return unchanged() && d.storage?.getItem(PERSISTED_KEY) === persisted
         } catch { return false }
@@ -540,7 +561,7 @@ export function createMediaSync(deps = {}) {
     const unsub = store.subscribe(s => {
       const refs = s.S === prev.S ? prevRefs : refsKey(s.S)
       const moved = refs !== prevRefs
-      if (moved || s.sync?.lastSynced !== prev.sync?.lastSynced || s.user?.id !== prev.user?.id) schedule(2000)
+      if (moved || s.sync?.lastSynced !== prev.sync?.lastSynced || s.user?.id !== prev.user?.id || s.sync?.server !== prev.sync?.server) schedule(2000)
       if (moved) scheduleGc(10000)
       // Boot has restored the state: a clean-up that was asked for before now sees the real copy.
       if (s.ready && !prev.ready && gcWaiting) scheduleGc(2000)

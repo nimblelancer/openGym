@@ -1290,7 +1290,7 @@ export const useStore = create((set, get) => {
     if (!owner || (owner === user.id && (!serverBase() || serverBase() === base))) return
     syncFromSaved()
     const S = get().S, tok = currentSession(), server = serverBase()
-    const all = await readStashes()
+    const all = await readStashes({ strict: true })
     const key = stashKey(server, owner)
     const live = get().user?.id === owner
     if ((!live && hasData(S)) || (hasData(S) && (owesOwn() || adoptHold)) || S.active || pendingRefCount(S)) {
@@ -1313,7 +1313,10 @@ export const useStore = create((set, get) => {
   const stashOwed = async () => {
     const user = get().user
     if (!user) return true
-    const all = await readStashes()
+    const tok = currentSession()
+    let all
+    try { all = await readStashes({ strict: true }) } catch { return false }
+    if (!isCurrent(tok)) return false
     const server = serverBase()
     const key = stashKey(server, user.id)
     const prev = all[key]?.state
@@ -1334,7 +1337,10 @@ export const useStore = create((set, get) => {
     const user = get().user
     const a = get().S.active
     if (!user || !a) return true
-    const all = await readStashes()
+    const tok = currentSession()
+    let all
+    try { all = await readStashes({ strict: true }) } catch { return false }
+    if (!isCurrent(tok) || get().S.active !== a) return false
     const server = serverBase()
     const key = stashKey(server, user.id)
     const prev = all[key]?.state
@@ -2092,6 +2098,9 @@ export const useStore = create((set, get) => {
     },
     // Every photo and video file the stashes refer to: they are kept on this device for as long
     // as the stash is (lib/media-sync.js localMediaGc, Reset everything).
+    // Expose an opaque same-instance state-sync identity to media sync.
+    // A pairing in progress must not authorize requests using mixed credentials.
+    mediaSessionIdentity() { return pairingTransition ? null : currentSession() },
     async stashedMediaHashes() {
       const all = await readStashes({ strict: true })
       return new Set(Object.values(all).flatMap(e => [...keptHashes(e?.state)]))
@@ -2163,8 +2172,10 @@ export const useStore = create((set, get) => {
       if (!left.owed && !(await stashActive())) return { owed: true, count: 0, stashed: false }
       // The device is signed out either way. A request that did not get through leaves the cookie
       // behind, still valid, so the logout is owed until the server answers it (see boot).
+      const tok = currentSession(), before = get().S
       let out = null
-      try { out = await api('/api/logout', { method: 'POST', body: '{}' }) } catch (e) { if (!MOBILE) logoutOwed(true) }
+      try { out = await api('/api/logout', { method: 'POST', body: '{}' }) } catch (e) { if (isCurrent(tok) && !MOBILE) logoutOwed(true) }
+      if (!isCurrent(tok) || get().S !== before) return { owed: true, count: 0, stashed: false }
       await clearLocalSession()
       // OIDC_LOGOUT: the provider's session ends too, in this browser (the phone has none of it).
       if (!MOBILE && typeof out?.provider_logout === 'string' && /^https?:\/\//.test(out.provider_logout)) window.location.assign(out.provider_logout)
@@ -2248,9 +2259,12 @@ export const useStore = create((set, get) => {
       const left = get().unsyncedChanges()
       if (left.owed && !force) return owedResult(left)
       await stopTimers()
-      await api('/api/logout/all', { method: 'POST', body: '{}' })
+      // Prove required local preservation before revoking the session.
       if (left.owed && !(await stashOwed())) return owedResult(left, { stashed: false })
       if (!left.owed && !(await stashActive())) return { owed: true, count: 0, stashed: false }
+      const tok = currentSession(), before = get().S
+      await api('/api/logout/all', { method: 'POST', body: '{}' })
+      if (!isCurrent(tok) || get().S !== before) return { owed: true, count: 0, stashed: false }
       await clearLocalSession()
       return left.owed ? owedResult(left, { stashed: true }) : { owed: false }
     },

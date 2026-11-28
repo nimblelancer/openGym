@@ -21,7 +21,7 @@ async function verify(read,h,expected){
     return n===blob.size&&hash.digest('hex')===h?{status:'verified',size:n,mime:blob.type}:{status:'invalid'};
   }catch{return {status:'unreadable'};}
 }
-export async function auditMigrationMedia({owner,snapshots,readLocal,readBackup,readDestination,isCurrent}){
+export async function auditMigrationMedia({owner,snapshots,readLocal,readBackup,readDestination,isCurrent,retainedInventory=null}){
   if(typeof owner!=='string'||!owner||!Array.isArray(snapshots)||!snapshots.length||snapshots.length>32||![readLocal,readBackup,readDestination,isCurrent].every(f=>typeof f==='function'))throw Error('invalid migration preflight');
   const refs=new Map(),issues=new Set(),required=new Set(),uploadable=new Set();
   const add=m=>{
@@ -41,6 +41,17 @@ export async function auditMigrationMedia({owner,snapshots,readLocal,readBackup,
     // active set references are retained locally even though not uploadable.
     for(const m of stateMediaRefs({workouts:[S.active]})){add(m);if(m.poster!=null)add(m.poster);}
   }
+  // Explicit owner-bound retained objects must be verified too, even when
+  // no current state references them. This is a supplied frozen inventory,
+  // not an enumeration of unknown devices or a proof of completeness.
+  if(retainedInventory!==null){
+    if(retainedInventory?.owner!==owner||!Array.isArray(retainedInventory.rows)||retainedInventory.rows.length>MAX_HASHES)throw Error('invalid or foreign retained inventory');
+    const seen=new Set();
+    for(const row of retainedInventory.rows){
+      if(!validHash(row?.hash)||seen.has(row.hash))throw Error('invalid retained inventory row');
+      seen.add(row.hash);add(row);uploadable.add(row.hash);
+    }
+  }
   if(required.size>MAX_HASHES)throw Error('migration inventory exceeds audit bound');
   // Known-file minimum only: destination-retained objects and concurrent writes
   // may consume additional capacity. No claim of available destination quota.
@@ -55,8 +66,10 @@ export async function auditMigrationMedia({owner,snapshots,readLocal,readBackup,
   for(const h of [...required].sort()){
     const expected=refs.get(h);
     if(!expected)issues.add('missing-reference-metadata');
-    const local=await verify(readLocal,h,expected),backup=await verify(readBackup,h,expected),destination=await verify(readDestination,h,expected);
-    if(!await isCurrent(owner))throw Error('migration snapshot or owner changed');
+    const fence=async()=>{if(!await isCurrent(owner))throw Error('migration snapshot or owner changed');};
+    const local=await verify(readLocal,h,expected);await fence();
+    const backup=await verify(readBackup,h,expected);await fence();
+    const destination=await verify(readDestination,h,expected);await fence();
     if(destination.status!=='verified')issues.add('destination-not-verified');
     if(backup.status!=='verified')issues.add('backup-not-verified');
     if(expected&&expected.size>limit(expected.mime))issues.add('destination-size-limit');
