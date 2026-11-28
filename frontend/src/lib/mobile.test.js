@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { isoOf } from './format.js'
-import { buildReminderNotifications, nativeMediaSnapshots } from './mobile.js'
+import { buildReminderNotifications, nativeMediaSnapshots, readJsonFile } from './mobile.js'
 
 const push = { id: 'push', name: 'Push' }
 const pull = { id: 'pull', name: 'Pull' }
@@ -124,4 +124,42 @@ it('Phase 7: preservation reads both native mirrors, and distinguishes absence f
   files.clear()
   expect(await nativeMediaSnapshots(load)).toEqual([])
   await expect(nativeMediaSnapshots(async () => { throw Error('unavailable') })).rejects.toThrow('unavailable')
+})
+
+it('Phase 7: strict exact-file reads recover valid JSON while absence requires trustworthy inventory', async () => {
+  const name = 'opengym-stash.json', value = { synthetic: { at: 1 } }
+  let data = JSON.stringify(value), listed = 0, failure = false, listing = null
+  const load = async () => ({
+    Directory: { Data: 'DATA' }, Encoding: { UTF8: 'utf8' },
+    Filesystem: {
+      readFile: async opts => {
+        expect(opts).toEqual({ path: name, directory: 'DATA', encoding: 'utf8' })
+        if (failure) throw Error('injected read failure')
+        return { data }
+      },
+      readdir: async () => {
+        listed++
+        if (listing === null) throw Error('injected listing failure')
+        return listing
+      }
+    }
+  })
+  const read = () => readJsonFile(name, { strict: true, load })
+  expect(await read()).toEqual(value)
+  expect(listed).toBe(0)
+  data = '{broken'
+  await expect(read()).rejects.toThrow()
+  data = 'null'
+  await expect(read()).rejects.toThrow('invalid native JSON')
+  expect(listed).toBe(0)
+  failure = true
+  await expect(read()).rejects.toThrow('injected listing failure')
+  listing = { files: [null] }
+  await expect(read()).rejects.toThrow('invalid native directory inventory')
+  listing = { files: [{ name }] }
+  await expect(read()).rejects.toThrow('injected read failure')
+  listing = { files: [{ name: 'unrelated.json' }] }
+  expect(await read()).toBeNull()
+  expect(listed).toBe(4)
+  console.log('PHASE7_STRICT_NATIVE_EXACT_READ PASS')
 })

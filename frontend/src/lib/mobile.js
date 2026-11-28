@@ -109,17 +109,27 @@ const REMOTE_FILE = 'opengym-remote.json'
 
 // Small JSON files in the app's private data directory, for device facts that must not ride
 // in S (which syncs and exports): the pairing, and how the Coach runs on this phone.
-export async function readJsonFile(name, { strict = false } = {}) {
+export async function readJsonFile(name, { strict = false, load = () => import('@capacitor/filesystem') } = {}) {
   try {
-    const { Filesystem, Directory, Encoding } = await import('@capacitor/filesystem')
-    if (strict) {
-      // Absence is confirmed by directory inventory, not by swallowing an IO
-      // or parsing failure. Only preservation callers opt in.
+    const { Filesystem, Directory, Encoding } = await load()
+    let r
+    try {
+      // A successful exact file read proves presence without needing to
+      // enumerate the directory. Some native adapters can read an existing
+      // private file while root directory enumeration is unavailable.
+      r = await Filesystem.readFile({ path: name, directory: Directory.Data, encoding: Encoding.UTF8 })
+    } catch (readError) {
+      if (!strict) return null
+      // Absence still requires positive directory evidence. If enumeration
+      // fails, is malformed or lists the file, the read error is not absence.
       const list = await Filesystem.readdir({ path: '', directory: Directory.Data })
-      if (!Array.isArray(list.files)) throw new Error('invalid native directory inventory')
-      if (!list.files.some(f => (typeof f === 'string' ? f : f?.name) === name)) return null
+      if (!Array.isArray(list?.files)) throw new Error('invalid native directory inventory')
+      const names = list.files.map(f => typeof f === 'string' ? f : f?.name)
+      if (names.some(n => typeof n !== 'string' || !n)) throw new Error('invalid native directory inventory')
+      if (!names.includes(name)) return null
+      throw readError
     }
-    const r = await Filesystem.readFile({ path: name, directory: Directory.Data, encoding: Encoding.UTF8 })
+    // Parsing errors are never routed through the absence fallback.
     const parsed = JSON.parse(r.data)
     if (strict && parsed === null) throw new Error('invalid native JSON')
     return parsed

@@ -281,6 +281,7 @@ it('actual upstream store: offline conflict, failed acknowledgements, revoke, st
   expect(ids((await home.get()).state)).toEqual(['owed','phone-offline','seed','web-edit'])
   expect(ids(store.getState().S)).toEqual(['owed','phone-offline','seed','web-edit'])
   expect(readFile('opengym-stash.json')?.[stashKey]||null).toBe(null)
+  console.log('PHASE7_NATIVE_ONLY_STASH_RECOVERY PASS')
   // Each medium alone can retain a new stash even if the other holds stale data.
   // Re-pair against the real Worker, not only a mocked API.
   for(const durable of ['localStorage','native']){
