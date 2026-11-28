@@ -446,6 +446,22 @@ test('read-only migration audit verifies known bytes and fails closed on missing
   const overlap=await auditMigrationMedia({...retainedArgs,destinationInventory:{owner,rows:[retained]}});
   assert.deepEqual(overlap.minimumDestination,occupied.minimumDestination);
   await assert.rejects(auditMigrationMedia({...retainedArgs,destinationInventory:{owner:'foreign',rows:[retained]}}),/foreign destination/);
+  // Duplicate rows within either supplied inventory are invalid; overlap
+  // between different inventories is expected and must be counted once.
+  for(const name of ['retainedInventory','destinationInventory']){
+    let reads=0;
+    await assert.rejects(auditMigrationMedia({...retainedArgs,[name]:{owner,rows:[retained,retained]},readLocal:async()=>{reads++;return blob;}}),/invalid .* inventory row/);
+    assert.equal(reads,0);
+  }
+  const badDestination=await auditMigrationMedia({...retainedArgs,retainedInventory:null,destinationInventory:{owner,rows:[retained]},
+    readDestination:async h=>h===retained.hash?new Blob([Buffer.alloc(retained.size)],{type:retained.mime}):blob});
+  assert.equal(badDestination.knownMediaVerified,false);
+  assert.equal(badDestination.records.find(r=>r.hash===retained.hash).destination,'invalid');
+  const badBackup=await auditMigrationMedia({...retainedArgs,retainedInventory:null,destinationInventory:{owner,rows:[retained]},
+    readBackup:async h=>h===retained.hash?new Blob([Buffer.alloc(retained.size)],{type:retained.mime}):blob});
+  assert.equal(badBackup.knownMediaVerified,false);
+  assert.equal(badBackup.records.find(r=>r.hash===retained.hash).backup,'invalid');
+  assert.equal(badBackup.cutoverAuthorized,false);
   console.log('PHASE7_RETAINED_INVENTORY_FENCE PASS');
   console.log('PHASE5_PREFLIGHT_CAPACITY_LOCAL_ONLY_GATES PASS');
   console.log('PHASE5_MIGRATION_PREFLIGHT_INTEGRITY PASS');
@@ -465,6 +481,17 @@ test('Phase 7: migration audit deadlines abort stalled adapters and streams with
   assert.equal(cancelled,true);assert.equal(later,0);
   await assert.rejects(auditMigrationMedia({...args,isCurrent:async()=>new Promise(()=>{}),readLocal:async()=>{later++;return blob;}}),e=>e.code==='audit-timeout');
   assert.equal(later,0);
+  // The total budget must bound a stalled fence even when the adapter
+  // budget is larger. Observe the abort, not merely the rejection.
+  let fenceAborted=false;
+  await assert.rejects(auditMigrationMedia({...args,adapterMs:1000,totalMs:30,
+    isCurrent:async(o,{signal})=>new Promise(()=>{signal.addEventListener('abort',()=>{fenceAborted=true;},{once:true});})}),e=>e.code==='audit-timeout');
+  assert.equal(fenceAborted,true);assert.equal(later,0);
+  // Fence after a successful local read must still stop backup/destination.
+  let checks=0,postReadAborted=false;
+  await assert.rejects(auditMigrationMedia({...args,readLocal:async()=>blob,
+    isCurrent:async(o,{signal})=>++checks===1?true:new Promise(()=>{signal.addEventListener('abort',()=>{postReadAborted=true;},{once:true});})}),e=>e.code==='audit-timeout');
+  assert.equal(checks,2);assert.equal(postReadAborted,true);assert.equal(later,0);
   console.log('PHASE7_AUDIT_ADAPTER_DEADLINES PASS');
 });
 
