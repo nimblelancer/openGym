@@ -1414,10 +1414,24 @@ export const useStore = create((set, get) => {
     // Only Vitest emits reason codes. Never log owners, server addresses,
     // stash keys, state contents or arbitrary exception messages.
     const trace = reason => { if (import.meta.env.MODE === 'test') console.log('PHASE7_STASH_ADOPTION_GATE', reason) }
-    let all
-    try { all = await withStashLock(() => readStashes({ strict: true })) }
-    catch (e) {
-      trace(['invalid stash inventory', 'invalid stash entry', 'invalid stash tombstone', 'invalid native directory inventory', 'invalid native JSON'].includes(e?.message) ? e.message : 'strict-read-or-lock-error')
+    let all, entered = false, readDone = false
+    try {
+      await withStashLock(async () => {
+        entered = true
+        all = await readStashes({ strict: true })
+        readDone = true
+      })
+    } catch (e) {
+      const known = ['invalid stash inventory', 'invalid stash entry', 'invalid stash tombstone', 'invalid native directory inventory', 'invalid native JSON']
+      const detail = known.includes(e?.message) ? e.message :
+        /not a function/.test(e?.message || '') ? 'not-a-function' :
+        /not defined/.test(e?.message || '') ? 'not-defined' :
+        /before initialization/.test(e?.message || '') ? 'before-initialization' :
+        /File does not exist/.test(e?.message || '') ? 'file-absent' :
+        /Cannot read properties/.test(e?.message || '') ? 'invalid-property-access' :
+        'other'
+      const source = String(e?.stack || '').match(/(?:useStore\.js|mobile\.js):\d+:\d+/)?.[0] || 'other-source'
+      trace((entered ? readDone ? 'after-read' : 'inside-read' : 'before-read') + ':' + (['TypeError','ReferenceError','SyntaxError','Error'].includes(e?.name) ? e.name : 'other') + ':' + detail + ':' + source)
       return
     }
     if (!isCurrent(tok)) { trace('session-changed'); return }
