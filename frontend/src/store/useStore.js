@@ -1173,16 +1173,37 @@ export const useStore = create((set, get) => {
     stashQueue = op.catch(() => {})
     return op
   }
+  // Validate each durable medium before merging: a malformed newer entry
+  // must not mask a valid older copy or authorize preservation/cleanup.
+  const stashObject = value => !!value && typeof value === 'object' && !Array.isArray(value)
+  const validateStashInventory = all => {
+    if (!stashObject(all)) throw new Error('invalid stash inventory')
+    for (const [key, entry] of Object.entries(all)) {
+      if (!stashObject(entry) || !Number.isSafeInteger(entry.at) || entry.at < 0 ||
+          key.indexOf('|') < 0 || key.endsWith('|')) throw new Error('invalid stash entry')
+      if (entry.cleared === true) {
+        if (Object.hasOwn(entry, 'state')) throw new Error('invalid stash tombstone')
+        continue
+      }
+      if (Object.hasOwn(entry, 'cleared') && entry.cleared !== false ||
+          typeof entry.uid !== 'string' || !entry.uid ||
+          !(entry.server == null || (typeof entry.server === 'string' && entry.server)) ||
+          stashKey(entry.server, entry.uid) !== key || !stashObject(entry.state) ||
+          (Object.hasOwn(entry, 'adopt') && typeof entry.adopt !== 'boolean'))
+        throw new Error('invalid stash entry')
+    }
+  }
   const readStashes = async ({ strict = false } = {}) => {
     let all = {}
     try {
       const raw = localStorage.getItem(STASH_KEY)
       all = raw === null ? {} : JSON.parse(raw)
-      if (!all || typeof all !== 'object' || Array.isArray(all)) throw new Error('invalid stash inventory')
+      if (!stashObject(all)) throw new Error('invalid stash inventory')
+      if (strict) validateStashInventory(all)
     } catch (e) { if (strict) throw e; all = {} }
     if (MOBILE) {
       const f = await readJsonFile(STASH_FILE, { strict })
-      if (strict && f !== null && (!f || typeof f !== 'object' || Array.isArray(f))) throw new Error('invalid native stash inventory')
+      if (strict && f !== null) validateStashInventory(f)
       if (f && typeof f === 'object') {
         // Either medium may have refused the last write. Do not let an older native
         // entry hide the newer localStorage copy (or the reverse).
