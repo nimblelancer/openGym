@@ -1,0 +1,89 @@
+# Phase 7 — Consolidated integrated acceptance (local authorization)
+
+Date: 2026-11-28. Repository: nimblelancer/openGym. Branch: feat/cloudflare-migration.
+Entry: D1–D8 approved. Phase 6 scoped local freeze 9f3af3dc6b6660be2555c74ca0646d46faccdad6, CI 46099685999 (8/8 jobs, 11239/11239 executions, seven verified ZIPs and profiles). Phase 7 local work authorized, planning in progress; no hosted staging, production or final phase closure authorized.
+
+## 1. Objective and evidence boundaries
+
+Execute the master-plan integrated regression, relevant complete contract/caller validation, data-preservation and security qualification, independent backup/restore and rollback rehearsal, and ultimately real Free-tier staging metrics and physical acceptance. Hosted staging and resource operations require separate explicit approval; local synthetic work cannot certify those gates. No real account data, existing-account cutover, main merge, native rebuild/release, public issue/PR, production or Learning Hub changes. Do not weaken passkey UV, session/owner fencing, caps or retention to obtain green CI. Stop on an unresolved required-client incompatibility, unsafe persistence/restore or resource feasibility failure; present alternatives rather than silently removing required behavior.
+
+### Frozen baselines (immutable evidence, not full acceptance)
+
+| Phase | Tested commit | CI | Scope |
+| --- | --- | --- | --- |
+| 3 | ab4e37829ddb18c74267460e821644c0b5743d18 | 45657223798 | 19/21 automated/local, physical passkey and owner open |
+| 4 | 857550811adb4e4b16d562cdd9a4cc341d30eb1f | 45854636040 | 6/6 jobs, 11217 executions; patched source, not installed release |
+| 5 | 85b3e00416668b9bfd00aec35a49d5c1cc8c97ef | 46033465083 | 7/7 jobs, 11228 executions; declared-length failure and legacy risk open |
+| 6 | 9f3af3dc6b6660be2555c74ca0646d46faccdad6 | 46099685999 | 8/8 jobs, 11239 executions; scoped recovery/privacy only |
+
+Source documents PHASE_03.md, PHASE_04.md, PHASE_05.md, PHASE_06.md and VALIDATION_MATRIX.md remain the original acceptance sources. This consolidated tracker maps their outstanding gates; it does not replace individual criteria or waive a partially covered subcase. Phase 1/2 closed for local scope only; any inherited hosted performance/operation/cost obligations remain. No prior PASS automatically certifies modified code or actual devices.
+
+## 2. Prioritized work packages and dependencies
+
+| Work package | Priority | Scope | Entry |
+| --- | --- | --- | --- |
+| P7-A | P0 | Owner authorization, baseline/contract evidence, consolidated gate inventory and scope guards | DOCUMENTED |
+| P7-B | P0 | D2 exact oversized declared-length HTTP, admission recovery, authentication and no mutation | OPEN/FAIL historical |
+| P7-C | P0 | D3/R6 official-client safety feasibility; legacy ACK/cache, offline/stash/reset/concurrency preservation | OPEN / risk reproduced |
+| P7-D | P0 | Complete owner-bound inventory, recovery, source/destination fencing, ambiguous commit and privacy | PARTIAL |
+| P7-E | P1 (security subgates P0) | Relevant API/UI contract and unsupported capabilities, passkey redundancy/lost-last-passkey policy | PARTIAL |
+| P7-F | P1 | Integrated regression, profiles, release candidate diff, local dry-run and rollback qualification | OPEN |
+| P7-G | Mandatory approval-dependent | Physical passkey, official mobile, independent backup/key custody, hosted staging/free-tier/rollback | BLOCKED/DEFERRED |
+| P7-H | Mandatory | Consolidated final evidence, owner sign-off and closure decision | OPEN |
+
+P7-B and P7-C are both P0: start D2 diagnostic because it is a confirmed reproducible release failure with an exact prior request; simultaneously assess installed-client feasibility and data preservation before investing in hosted preparation. No speculative repeated hotfixes. P7-D depends on explicit compatible recovery and inventory contracts; do not publish state before complete verified media and stable identity. P7-E may proceed alongside local fixes but never hide required functions or claim optional route refusal equals UI parity. P7-F qualifies the final integrated candidate, not just historical frozen runs. P7-G requires separate approval for staging and actual device/owner work; start only when safe and prerequisites verified. P7-H requires every mandatory subgate passed, no unwaived FAIL/OPEN/PARTIAL, and owner sign-off. Any proposed scope change must be explicit and cannot silently waive safety or physical acceptance.
+
+## 3. Consolidated acceptance matrix (entry)
+
+Status legend: DOCUMENTED = planning evidence only; PRIOR SCOPED PASS = historical evidence, rerun affected checks; PARTIAL = scoped evidence plus unresolved subgates; OPEN/FAIL = confirmed failure unresolved; RISK_REPRODUCED = known unsafe scenario; DEFERRED/BLOCKED = not executed or authorized, not waived.
+
+| ID | Origin | Required evidence and exit | Entry |
+| --- | --- | --- | --- |
+| P7-01 | D1–D8, P3-21/P4-16/P5-16/P6-15 | Record sequencing approvals, exact immutable baselines, branch/scope controls, separate closure/release permission | DOCUMENTED; final owner gates OPEN |
+| P7-02 | D2, P5-10/11/14 | Exact original authenticated 8 MiB+1 declared Content-Length request returns complete 413 JSON media-too-large, no state/R2 mutation, admission and subsequent valid requests recover; no relaxation of auth/size limits | OPEN/FAIL (46031207765, 46032423698) |
+| P7-03 | D3, P5-11, P4-09/R6 | Actual client previously acknowledged/rejected media: keep original SHA and owed/pending protection despite cache pressure and restart; no silent eviction; qualify official installed app or stop for compatibility decision | RISK_REPRODUCED |
+| P7-04 | P4-09/R1–R5, P4-05..10 | Web/stale-tab fallback, pairing persistence atomicity, concurrent stash, sole-medium tombstone loss, divergent active sessions, offline/cold restart/rewind and no resurrection; actual client/store tests | PARTIAL |
+| P7-05 | D1/D3, P5-12, P6-11 | Truthful reset retention and quota, preserve local sole copies until verified state and backup; fail closed on unreadable stash/failed push/lost ACK; separate intentional erase policy and no auto/selective purge | PARTIAL, policy APPROVED |
+| P7-06 | P5-11, P6-03/04/09 | Complete owner-bound source/device/stash/active/retained inventory and consistent source fence; compare actual object/byte totals, detect unknown/missing/invalid refs, unavailable data and adapter deadlines; bounded trusted filesystem scope | PARTIAL |
+| P7-07 | P6-02/04/05/06, P5-11 | Verified compatible full-capacity R2 restore, exact state/media/retained readback, oversized/device-only originals preserved and recoverable; authenticate before upload; no plaintext backup artifacts or destructive source action | PARTIAL (208 MiB+1 disk and 200 MiB read != full R2 restore) |
+| P7-08 | P6-07, P4-09, P2 atomicity | Lost state-commit acknowledgement, owner/revision/write-identity fence, interrupted restore and stale/concurrent-client behavior; no unsafe overwrite, false success or silent resurrection | PARTIAL |
+| P7-09 | P3-04/08/10/11, P6-10/11, D7 | Redundant passkeys, revocation/restart and documented tested independent recovery if final passkey lost, no bypass; actual recovery flow and production key policy gated separately | PARTIAL |
+| P7-10 | P3-01/18, P4-13, P5-13, P6-11 | Relevant full upstream route/caller inventory, accurate flags and mounted web/actual native behavior; unsupported private-MVP features visibly unavailable, no fake success or mandatory dependency failure; export schema/privacy, external network review | PARTIAL (170 operations inventoried, 38 representative refusals tested) |
+| P7-11 | P5-07/13, P4-11/12/13 | Representative and required full device formats, private authorization/ranges, actual mobile networking, media playback and preservation, local health/notifications where applicable | PARTIAL |
+| P7-12 | P2/P3-19/P5-08/P6-08/09 | Reconcile committed SQLite payload and retained R2 quota, actual operation/abuse bounds, failure/recovery tests; distinguish local usage from total account billing | PRIOR SCOPED PASS / wider acceptance OPEN |
+| P7-13 | P3-20/P4-14/P5-14/P6-12 | All eight existing CI jobs preserved plus any explicitly scoped new job, all executions/logs/artifacts and profiling reviewed; unchanged frozen tests/deps unless separately justified with regression evidence | PRIOR SCOPED PASS / final candidate OPEN |
+| P7-14 | P3-04/M3-01..09/P3-21 | Actual UV-capable physical passkey checklist and recorded owner results on final relevant candidate | DEFERRED NOT RUN |
+| P7-15 | P4-15/M4-01..10/R6, P4-16 | Installed official app version/OS, same-owner pairing, sync, offline/restart/re-pair/stash/rewind, native capabilities and media; no patched-source substitution | DEFERRED/BLOCKED (secure staging approval required) |
+| P7-16 | P5-15/P6-05/13, D7 | Independently durable encrypted off-provider backup and key custody/retrieval, actual restore rehearsal, verified rollback; no temporary CI fixture substitution | DEFERRED |
+| P7-17 | P1/2 hosted limits, P3-19, P5-15/P6-14, master plan | Real isolated Free-tier staging, remaining account quotas, Worker CPU/heap/requests, DO storage/ops, R2 storage/ops, assets/limits, abuse and cost under owner-approved budgets; verify Learning Hub unaffected without modifying it | BLOCKED separate authorization |
+| P7-18 | Master plan / P6-07/13/14 | Rollback rehearsal preserving current source, backup and identities; local dry-run then separately authorized staging rollback, no destructive operations or unverified success | OPEN / hosted BLOCKED |
+| P7-19 | P3-21/P4-16/P5-16/P6-15 | All mandatory prior and consolidated gates verified, owner approves final consolidated acceptance and separate phase closure; production explicitly separate | OPEN |
+
+The mapping above groups related subgates without deleting the historical source criteria. Preserve all additional release gates in the source docs, including supported-core differential/security/header deviations, actual passkey RP/origin/UV, full media format/legacy compatibility, physical durability, upstream asset license/manifest, local vs hosted limits and account-wide resource feasibility. Owner-approved optional feature exclusions (AI Coach, server push/watch relay, password login, API tokens/calendar, OIDC/OAuth/MCP, trainer/gym/community/share/admin multi-user/integrations) are not permission to break required core/native behavior. Any discovered mandatory dependency is a stop condition.
+
+## 4. First targeted diagnostic — P7-B / D2 (next implementation)
+
+Source anchors: failed candidates d69b596d (46031207765) and 40784324 (46032423698), cloudflare-poc/test/web-media.test.mjs, exact rejectOversized helper on 40784324 (around lines 435–460), current media.js boundedBytes/handleMedia, api-worker.js DO routing, web-worker.js and local-runner.mjs. Reopened original helper at entry: node:http request with agent:false, Connection:close, valid owner cookie/origin/expected-account, exact archived bytes, explicit Content-Length, flushHeaders, 64 KiB chunks paced by drain/setImmediate, response bounded to 64 KiB and 15 s deadline. Earlier fetch ECONNRESET and later non-JSON response are historical failures; origin of failure still unestablished.
+
+1. Reproduce exact historical authenticated request in isolated Phase 7 test/diagnostic path without weakening or replacing frozen Phase 5 assertions or changing limits. Preserve exact synthetic encrypted backup original size/hash. Record status, content type, bounded sanitized error category, response completion, transport error and whether handler/DO/proxy was reached. No secret/raw payload logs; classify non-JSON/reset/timeout as FAIL, not 413.
+2. Capture pre/post state revision/write identity, inventory/missing/usage and object absence, then valid same-owner upload/retry to prove admission released; reject unauthorized and mismatched owner. Compare direct handler and actual HTTP chunked baseline only to isolate layers, not as substitutes.
+3. Identify exact failing boundary with evidence. Fix confirmed cause minimally if in scope, retain regression; if emulator limitation or unresolved issue, document evidence and keep P7-02 OPEN/FAIL. Do not loop on ungrounded harness tweaks; no speculative change to auth, DO locks, quota or media caps.
+4. Verify eight prior jobs, new diagnostic result, profiles/artifacts and frozen scope diff on tested candidate. Report local evidence only. Stop release decisions while P7-02 unresolved.
+
+## 5. P0 client preservation and recovery sequencing (P7-C/D)
+
+First inspect pinned client code and official installed version feasibility (owner manual only; no APK/IPA build or distribution). Reuse known legacy risk marker PHASE5_LEGACY_ACK_PENDING_GAP and PHASE5_LEGACY_ACK_CACHE_EVICTION, exact 8 MiB+1 original and explicit restage evidence. Distinguish a branch source fix from an installed-client fix. Require no loss under disconnected/rejected/acknowledged/GC pressure, sole-medium and concurrent stash/reset failures, verify source backup and every media reference before cleanup. Do not force reset/disconnect on real profile. If official release cannot satisfy mandatory contract without an unapproved update, stop and obtain explicit scope decision; do not claim release compatibility.
+
+Next establish stable inventory/export and recovery contracts, explicit owner mapping and write freeze/generation/revision identity, authenticated byte readback, consistent source/destination enumeration, independent durable backup and key retrieval, capacity and interruption/ambiguous ACK verification. Use bounded synthetic tests first. Current Phase 6 bundle limits (16 MiB manifest, 12 MiB aggregate snapshots, 32 snapshots, 1000 rows, 100 MiB per original, 512 MiB aggregate) and 8 MiB returned compatible media buffer are prototype limits; reject incompatible input rather than silently truncate. Actual full-capacity restore requires valid compatible files, not padded unplayable capacity fixture; actual device-only restore and key loss handling still mandatory. No production backup service or general recovery endpoint is authorized.
+
+## 6. Consolidated owner/hosted readiness checklist (preparation only)
+
+- M3: use existing PHASE_03_MANUAL_PASSKEY.md M3-01..09; isolated localhost harness, actual native UV prompt not virtual, synthetic data, browser/OS/authenticator type and per-case sanitized status. Rerun relevant tests on final candidate. No credentials, codes, tokens or full sensitive logs shared.
+- M4: use PHASE_04_MOBILE_CONTRACT.md M4-01..10; official installed app (record version and OS), disposable profile, same-owner browser pairing, cross-device sync/offline edit/cold restart/revocation/re-pair, forced disconnect only on disposable profile, controlled rewind/reset and native permissions/media/unsupported UI. Loopback Worker is not reachable by physical phone by design; secure staging must be separately approved before remote device test. No LAN/tunnel shortcut.
+- Independent off-provider backup: owner selects independently protected storage and key custody, separate from archive and auth secrets; test key retrieval and restore using synthetic data, verify exact bytes/state and non-destructive rollback; do not mark fixture directories or CI artifacts as off-provider evidence. Never upload real archives/keys to CI or chat. No real recovery/erase until explicitly scoped.
+- Staging approval packet (not provisioning): proposed separate namespace/resources, account-wide quota headroom and read-only measurement plan, per-operation budgets and stop thresholds, privacy/auth/HTTPS review, rollback plan, no Learning Hub changes. Actual thresholds must be validated against current plan and remaining account quota after authorization, not guessed from local profiling. No hosted config changes or deployment here.
+- Final acceptance: record exact integrated commit, CI/run/artifacts, physical evidence, hosted metrics, rollback evidence and owner decisions; phase closure and production deployment are separate approvals.
+
+## 7. Entry checkpoint and next action
+
+Verified branch HEAD before approval f2db1372bf24ac6f9c496a1084bc387c177ed6b6; API run 46099685999 completed SUCCESS on exact Phase 6 candidate; candidate-to-HEAD diff four migration documents only. Source docs and historical failed request inspected. Prior verified artifact evidence retained; no fresh CI run or code change during this documentation-first planning iteration. P7-A documented, P7-B/C prioritized P0. Begin targeted P7-02 diagnostic next, preserve all frozen baselines and D1–D8. Phase 7 OPEN; no phase closure or production release.
