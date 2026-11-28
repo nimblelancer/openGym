@@ -9,7 +9,6 @@ import {setTimeout as sleep} from 'node:timers/promises';
 import {DatabaseSync} from 'node:sqlite';
 import {MediaLifecycle,GRACE_MS,DELETE_BATCH} from '../src/media-lifecycle.js';
 import {auditMigrationMedia,auditOwnerBucketMedia} from '../src/migration-media-preflight.js';
-import {Miniflare} from 'miniflare';
 import {localRunner} from './local-runner.mjs';
 import {authenticator} from './auth-fixture.mjs';
 import {inspect,parseRange,boundedBytes,readMediaJson,handleMedia,inventory} from '../src/media.js';
@@ -497,9 +496,25 @@ test('Phase 7: migration audit deadlines abort stalled adapters and streams with
 });
 
 test('Phase 7: bounded owner bucket enumeration with real local R2 and independent backup bytes',{timeout:60000},async()=>{
-  const mf=new Miniflare({modules:true,script:'export default {fetch(){return new Response("local synthetic")}}',compatibilityDate:'2026-01-01',r2Buckets:['MEDIA']});
+  // Use the existing pinned Wrangler local runner, not a Miniflare v4
+  // constructor or proxy API that the pinned v5 beta does not support.
+  const runner=await localRunner('wrangler.phase7-inventory.jsonc',{privateLogs:true,syntheticDiagnostics:true});
   try{
-    const bucket=await mf.getR2Bucket('MEDIA'),owner='syntheticOwner01',foreign='syntheticOwner02',prefix='private/v1/'+owner+'/';
+    await runner.start();
+    const call=async(route,body)=>{
+      const res=await fetch(runner.base+route,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body),signal:AbortSignal.timeout(15000)});
+      assert.equal(res.status,200,'local synthetic R2 fixture '+route);return res;
+    };
+    const bucket={
+      list:async opts=>(await call('/__poc/list',opts)).json(),
+      put:async(key,bytes,opts)=>(await call('/__poc/put',{key,bytes:Buffer.from(bytes).toString('base64'),opts})).json(),
+      get:async key=>{
+        const res=await call('/__poc/get',{key});
+        if(res.headers.get('x-poc-absent')==='1'){await res.body.cancel();return null;}
+        return {...JSON.parse(res.headers.get('x-poc-object')),body:res.body};
+      }
+    };
+    const owner='syntheticOwner01',foreign='syntheticOwner02',prefix='private/v1/'+owner+'/';
     const copies=new Map();
     const put=async(uid,b)=>{
       const h=sha(b),mime='image/png';
@@ -540,7 +555,7 @@ test('Phase 7: bounded owner bucket enumeration with real local R2 and independe
     assert.equal(later,0);
     assert.equal((await bucket.get('private/v1/'+foreign+'/'+unrelated.hash)).size,unrelated.size);
     console.log('PHASE7_LOCAL_R2_OWNER_INVENTORY_FENCE PASS');
-  }finally{await mf.dispose();}
+  }finally{await runner.cleanup();}
 });
 
 // A disposable encrypted backup/restore qualification, not an export format,

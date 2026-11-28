@@ -1411,12 +1411,23 @@ export const useStore = create((set, get) => {
     const tok = currentSession(), owner = readOwner()
     // Never auto-adopt a malformed entry (including a foreign uid under
     // this account's key). Keep both raw copies for explicit recovery.
+    // Only Vitest emits reason codes. Never log owners, server addresses,
+    // stash keys, state contents or arbitrary exception messages.
+    const trace = reason => { if (import.meta.env.MODE === 'test') console.log('PHASE7_STASH_ADOPTION_GATE', reason) }
     let all
-    try { all = await withStashLock(() => readStashes({ strict: true })) } catch { return }
-    if (!isCurrent(tok) || readOwner() !== owner || owner !== user.id) return
+    try { all = await withStashLock(() => readStashes({ strict: true })) }
+    catch (e) {
+      trace(['invalid stash inventory', 'invalid stash entry', 'invalid stash tombstone', 'invalid native directory inventory', 'invalid native JSON'].includes(e?.message) ? e.message : 'strict-read-or-lock-error')
+      return
+    }
+    if (!isCurrent(tok)) { trace('session-changed'); return }
+    if (readOwner() !== owner) { trace('owner-changed'); return }
+    if (owner !== user.id) { trace('owner-mismatch'); return }
+    if (!stashObject(all)) { trace('lock-result-invalid'); return }
     const exact = stashKey(serverBase(), user.id)
     const keys = Object.keys(all).filter(k => !all[k]?.cleared && (k === exact || (all[k]?.uid === user.id && !all[k]?.server)))
-    if (!keys.length) return
+    if (!keys.length) { trace('no-matching-entry'); return }
+    trace('validated-matching-entry')
     const S = get().S
     let merged = S
     for (const k of keys) merged = all[k].adopt ? mergeStates(merged, all[k].state, { prefer: 'a' }) : mergeStates(merged, all[k].state)
