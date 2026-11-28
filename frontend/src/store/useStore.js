@@ -1733,6 +1733,9 @@ export const useStore = create((set, get) => {
     // reset loses exactly those, and keeps whatever else it holds, whatever its dates say.
     // Resolves once the server's names are in (or could not be had).
     resetEverything() {
+      // Do not publish a reset before the migration's independent backup gate.
+      // The negotiated capability remains a hold, not a completed reset flow.
+      if (get().config?.media?.resetRequiresVerifiedBackup === true) return Promise.resolve(false)
       const cur = get().S
       const S = restartedState(cur)
       S.resetAt = Math.max(Date.now(), highestStamp(cur) + 1)

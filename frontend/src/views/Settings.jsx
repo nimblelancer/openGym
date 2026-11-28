@@ -454,20 +454,35 @@ export default function Settings({ page = null, find = null, via = null, entryKe
   // profile on the server, and — when it runs with the phone's own key — a file on the device.
   // Each is cleared on its own; forgetCoach() alone would pick one by mode. A failed call must
   // not stop the reset.
-  const resetEverything = () => confirmSheet({
+  // Cloudflare's ordinary reset retains server objects/quota. Until an
+  // owner-bound independent backup can be verified, block this destructive
+  // transition rather than reset first and try to preserve the bytes later.
+  const resetHeld = () => useStore.getState().config?.media?.resetRequiresVerifiedBackup === true
+  const resetHoldMessage = () => t('Reset is unavailable until an independent backup and restore are verified. Server media are retained and still count against quota. Account erasure is separate.')
+  const resetEverything = () => {
+    if (resetHeld()) return confirmSheet({
+      title: t('Reset everything?'),
+      message: resetHoldMessage(),
+      confirmText: t('OK'),
+      onConfirm: () => {},
+    })
+    return confirmSheet({
     title: t('Reset everything?'),
     message: user
       ? t('Deletes your plan, workouts, body weight, photos and videos from your profile on this server and on every signed-in device. This cannot be undone.')
       : t('Deletes your plan, workouts, body weight, photos and videos on this device. This cannot be undone.'),
     confirmText: t('Delete everything'), danger: true,
     onConfirm: () => {
+      // Config could have arrived while this older confirmation was open.
+      if (resetHeld()) { toast(resetHoldMessage()); return }
       if (user) api('/api/coach/forget', { method: 'POST', body: '{}' }).catch(() => {})
       if (coachLocal?.mode === 'byok') forgetCoach().catch(() => {})
       resetAll()
       nav('/home'); toast(t('All data reset'))
       clearMediaAfterReset(!!user).catch(() => {})
     },
-  })
+    })
+  }
 
   /* ---------------- what the pages and the search need to know about this device ---------------- */
   const nfcOK = useNfcSupported()

@@ -246,3 +246,43 @@ describe('Settings — photos and videos', () => {
     expect(await media.has(HASH)).toBe(false)
   })
 })
+
+describe('Phase 7 migration reset hold', () => {
+  it('discloses retained server quota and leaves original and stash untouched', async () => {
+    mocks.user = { id: 'u1', name: 'Ana' }
+    mocks.config = { media: { imageMB: 2, resetRequiresVerifiedBackup: true } }
+    const other = 'c'.repeat(64)
+    await media.put(HASH, new Blob([PHOTO]), { mime: 'image/jpeg', pending: false })
+    await media.put(other, new Blob(['stash']), { mime: 'image/png', pending: true })
+    mocks.stashed = new Set([other])
+    await mount()
+    act(() => { row('Reset everything').click() })
+    const dialog = mocks.confirmSheet.mock.calls[0][0]
+    expect(dialog.message).toContain('count against quota')
+    expect(dialog.message).toContain('independent backup')
+    act(() => dialog.onConfirm())
+    await settle()
+    expect(mocks.resetEverything).not.toHaveBeenCalled()
+    expect(mocks.pushState).not.toHaveBeenCalled()
+    expect(mocks.api.mock.calls.map(c => c[0])).not.toContain('/api/media/sweep')
+    expect(await sha256Hex(new Uint8Array(await (await media.get(HASH)).blob.arrayBuffer()))).toBe(HASH)
+    expect(await media.has(other)).toBe(true)
+    expect(mocks.toast).not.toHaveBeenCalledWith('All data reset')
+  })
+
+  it('blocks a stale confirmation if migration config arrives before confirm', async () => {
+    mocks.user = { id: 'u1', name: 'Ana' }
+    mocks.config = { media: { imageMB: 2 } }
+    await media.put(HASH, new Blob([PHOTO]), { mime: 'image/jpeg', pending: true })
+    await mount()
+    act(() => { row('Reset everything').click() })
+    mocks.config = { media: { imageMB: 2, resetRequiresVerifiedBackup: true } }
+    act(() => mocks.confirmSheet.mock.calls[0][0].onConfirm())
+    await settle()
+    expect(mocks.resetEverything).not.toHaveBeenCalled()
+    expect(mocks.pushState).not.toHaveBeenCalled()
+    expect(mocks.api.mock.calls.map(c => c[0])).not.toContain('/api/media/sweep')
+    expect(await media.has(HASH)).toBe(true)
+    expect(mocks.toast).not.toHaveBeenCalledWith('All data reset')
+  })
+})

@@ -148,7 +148,7 @@ export class AuthCoordinator extends DurableObject{
       try{a.tx(()=>{a.q('UPDATE auth_version SET version=version WHERE id=1');throw Error('health-rollback');});}catch(e){if(e.message!=='health-rollback')return result(503,{ok:false,writable:false});}
       return ok({ok:true,users:a.count(),writable:true});
     }
-    if(key==='GET /api/config')return ok({invite_only:true,allow_guest:false,signed_in:!!live(),...(live()?{coach:null,...(this.media?{media:MEDIA_CONFIG}:{})}:{})});
+    if(key==='GET /api/config')return ok({invite_only:true,allow_guest:false,signed_in:!!live(),...(live()?{coach:null,...(this.media?{media:{...MEDIA_CONFIG,resetRequiresVerifiedBackup:true}}:{})}:{})});
     if(key==='POST /api/register/options'){
       const name=text(b.name).trim().slice(0,40);if(!name)return err(400,'name required');
       if(!a.open()||!a.setup(text(b.code).trim().toLowerCase()))return invite();

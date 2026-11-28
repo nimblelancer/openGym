@@ -255,7 +255,7 @@ test('actual local Worker: SPA, private R2, authenticated media contract and res
     const o=await data(await post('/api/register/options',{name:'Synthetic Owner',code:SETUP_CODE}));
     const reg=await post('/api/register/verify',{cid:o.cid,credential:dev.register(o.options.challenge)});
     const r=await data(reg);uid=r.user.id;cookie=reg.headers.getSetCookie()[0].split(';')[0];
-    const cfg=await data(await raw('/api/config','GET',undefined,auth()));assert.equal(cfg.media.videoMB,8);assert.equal(cfg.media.sounds,true);
+    const cfg=await data(await raw('/api/config','GET',undefined,auth()));assert.equal(cfg.media.videoMB,8);assert.equal(cfg.media.sounds,true);assert.equal(cfg.media.resetRequiresVerifiedBackup,true);
     assert.equal((await put(image,hash,{origin:'https://hostile.invalid'})).status,403);
     assert.equal((await put(image,hash,{'x-opengym-account':'not-this-owner'})).status,409);
     assert.equal((await put(image,other)).status,400);

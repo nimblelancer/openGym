@@ -103,3 +103,15 @@ describe('a backup restored after a reset', () => {
     expect(ids(puts().at(-1).state.workouts).sort()).toEqual(['gym-today', 'w1', 'w2'])
   })
 })
+
+it('Phase 7: negotiated migration reset hold stops actual store mutation and server request', async () => {
+  signedIn(clone(PROFILE), 3)
+  const priorConfig = useStore.getState().config
+  try {
+    useStore.setState({ config: { media: { resetRequiresVerifiedBackup: true } } })
+    const before = JSON.stringify(useStore.getState().S)
+    expect(await useStore.getState().resetEverything()).toBe(false)
+    expect(JSON.stringify(useStore.getState().S)).toBe(before)
+    expect(api).not.toHaveBeenCalled()
+  } finally { useStore.setState({ config: priorConfig }) }
+})
