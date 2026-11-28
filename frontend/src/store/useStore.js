@@ -1294,8 +1294,12 @@ export const useStore = create((set, get) => {
     if (live && !held && !(owesOwn() && hasData(S)) && !pendingRefCount(S) && !S.active) return
     const server = serverBase()
     const key = stashKey(server, uid)
-    let all = {}
-    try { all = JSON.parse(localStorage.getItem(STASH_KEY)) || {} } catch { /* none */ }
+    // This synchronous web path must not overwrite an unreadable inventory
+    // or publish state under an owner that changed during the switch.
+    const raw = localStorage.getItem(STASH_KEY)
+    const all = raw === null ? {} : JSON.parse(raw)
+    validateStashInventory(all)
+    if (readOwner() !== uid) throw new Error('Previous account changed before preservation')
     const prev = all[key]?.state
     const state = prev ? mergeStates(S, prev) : clone(S)
     state.active = carryActive(S, state) || carryActive(prev, state) || null
@@ -1303,15 +1307,16 @@ export const useStore = create((set, get) => {
     // session ended), so the screens say whose changes these are rather than an id.
     let name = get().user?.id === uid ? get().user.name || '' : ''
     if (!name) { try { name = localStorage.getItem('gym_owner_name') || '' } catch { /* the id then */ } }
-    const entry = { server: server || null, uid, name, at: Date.now(), state, ...(held || all[key]?.adopt ? { adopt: true } : {}) }
+    const entry = { server: server || null, uid, name, at: stashAt(all[key]), state, ...(held || all[key]?.adopt ? { adopt: true } : {}) }
     all[key] = entry
-    // A second full copy beside the first may not fit (a profile near the size limit): the copy
-    // in storage is wiped next anyway, so it makes the room.
     const v = JSON.stringify(all)
-    try { localStorage.setItem(STASH_KEY, v) }
-    catch {
-      try { localStorage.removeItem(KEY); localStorage.setItem(STASH_KEY, v) } catch { /* still full — the file may still take it */ }
-    }
+    // Never remove the only live durable copy to make room for a stash.
+    // Storage refusal (including a silent failed write) must stop the switch.
+    if (readOwner() !== uid || localStorage.getItem(STASH_KEY) !== raw)
+      throw new Error('Previous account or stash changed before preservation')
+    localStorage.setItem(STASH_KEY, v)
+    if (localStorage.getItem(STASH_KEY) !== v || readOwner() !== uid)
+      throw new Error('Previous account preservation could not be verified')
     set({ keptRev: get().keptRev + 1 })
     if (MOBILE) keeping = readStashes().then(f => writeStashes({ ...f, [key]: entry })).catch(() => {})
   }
@@ -1991,6 +1996,25 @@ export const useStore = create((set, get) => {
         rejoined = owner === u.id && !preparedSwitch
         const other = !!owner && (owner !== u.id || preparedSwitch)
         if (other && MOBILE && !preparedSwitch) throw new Error('Preserve the previous account before switching')
+        if (other && !preparedSwitch) {
+          // A web sign-in may already have replaced the HTTP cookie. Keep
+          // sync held while preserving the old owner, before changing any
+          // adoption marker or clearing the original state. Do not discard
+          // pending push evidence before keepForPrevious checks what is owed.
+          setHold(true)
+          try { keepForPrevious(owner, wasHeld) }
+          catch {
+            // The old local user must not continue syncing with a possibly
+            // new cookie. End this local session, invalidate outstanding
+            // callbacks/timers, and retain its owner, data and adoption mark.
+            rejoined = false
+            set({ user: null })
+            newSession()
+            try { localStorage.removeItem('gym_user') } catch { /* memory session is closed */ }
+            setSync({ held: true, auth: true, offline: false, lastError: { status: 0, code: 'stash-preservation-failed' }, pending: owes() })
+            throw Object.assign(new Error(t('The previous account could not be saved on this device. Free up storage or save a backup and try again.')), { code: 'stash-preservation-failed' })
+          }
+        }
         // The hold goes on before anything else can run: a poll, a resume, a debounced push.
         if (adopt) {
           adoptHold = true
@@ -2008,7 +2032,6 @@ export const useStore = create((set, get) => {
         // account's saves (seenOwner below).
         syncFromSaved()
         if (other) {
-          if (!preparedSwitch) keepForPrevious(owner, wasHeld)
           forgetSync()
           localStorage.removeItem(KEY)
           // The new owner before the new copy, as on a sign-out: another tab still holding the

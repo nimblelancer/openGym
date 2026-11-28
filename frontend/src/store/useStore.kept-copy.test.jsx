@@ -64,8 +64,8 @@ describe('another account on a copy whose session ended', () => {
 })
 
 // A required preservation gate, not an expected-failure test. The web
-// synchronous account switch must leave the previous durable copy intact if
-// neither attempted stash publication succeeds. No real account or API writes.
+// synchronous account switch must leave the previous durable copy intact
+// when stash publication is refused. No real account or API writes.
 it('Phase 7: legacy synchronous account switch refuses loss of the sole durable copy', async () => {
   olgasCopy()
   const previous = JSON.stringify(useStore.getState().S)
@@ -98,4 +98,54 @@ it('Phase 7: legacy synchronous account switch refuses loss of the sole durable 
     expect(api.mock.calls.some(([, o]) => o?.method === 'PUT')).toBe(false)
     console.log('PHASE7_LEGACY_SYNC_PUBLICATION_FAIL_CLOSED PASS')
   } finally { vi.unstubAllGlobals() }
+})
+
+
+it('Phase 7: a live web switch with silent stash refusal fences sync and can retry safely', async () => {
+  olgasCopy()
+  const store = useStore.getState
+  store().setUser({ id: 'olga', name: 'Olga' })
+  store().update(s => { s.workouts.push(w('owed-live')) })
+  const storage = localStorage
+  const previous = storage.getItem('gym_state_v1')
+  const previousState = clone(store().S)
+  const oldAdopt = storage.getItem('gym_adopt')
+  expect(previous).not.toBeNull()
+  let refused = 0
+  vi.stubGlobal('localStorage', {
+    getItem: k => storage.getItem(k),
+    setItem(k, value) {
+      if (k === 'gym_stash') { refused++; return }
+      storage.setItem(k, value)
+    },
+    removeItem: k => storage.removeItem(k),
+    key: i => storage.key(i),
+    get length() { return storage.length },
+    clear: () => storage.clear(),
+  })
+  try {
+    expect(() => store().setUser({ id: 'yuri', name: 'Yuri' }, { adopt: true })).toThrow()
+    expect(refused).toBe(1)
+    expect(store().user).toBeNull()
+    expect(store().sync.held).toBe(true)
+    expect(storage.getItem('gym_user')).toBeNull()
+    expect(storage.getItem('gym_owner')).toBe('olga')
+    expect(storage.getItem('gym_adopt')).toBe(oldAdopt)
+    expect(storage.getItem('gym_state_v1')).toBe(previous)
+    expect(store().S).toEqual(previousState)
+    await store().pushState()
+    await store().pullState()
+    expect(api.mock.calls.some(([p, o]) => p === '/api/data' || o?.method === 'PUT')).toBe(false)
+  } finally { vi.unstubAllGlobals() }
+  // Storage is writable again. Retry the switch, not the old state PUT.
+  store().setUser({ id: 'yuri', name: 'Yuri' }, { adopt: true })
+  expect(store().user?.id).toBe('yuri')
+  expect(storage.getItem('gym_owner')).toBe('yuri')
+  expect(store().S.workouts).toEqual([])
+  const kept = await store().keptChanges()
+  expect(kept.map(k => k.uid)).toContain('olga')
+  const original = kept.find(k => k.uid === 'olga')
+  expect(ids((await store().keptState(original.server, 'olga')).workouts)).toEqual(['o1', 'o2', 'owed-live'])
+  expect(api.mock.calls.some(([, o]) => o?.method === 'PUT')).toBe(false)
+  console.log('PHASE7_LEGACY_SYNC_PUBLICATION_RETRY_FENCE PASS')
 })

@@ -38,8 +38,26 @@ test('offline SQLite fault injection, expired challenges/codes, disabled account
     assert.equal((await post(call,'/api/login/verify',await proof())).status,403);
     await edit(db=>db.exec('UPDATE auth_users SET disabled=0; DELETE FROM auth_limits;'));
     // Set the local bucket to its limit; no mass request loop or public endpoint is needed.
-    await edit(db=>db.prepare("INSERT OR REPLACE INTO auth_limits VALUES('anonymous',?,60)").run(Math.floor(Date.now()/60000)));
-    assert.equal((await post(call,'/api/login/options')).status,429);
+    // The limiter resets at minute boundaries. Seed and restart can straddle
+    // one; a response in another window is not evidence about the seeded bucket.
+    // Retry only an observed window transition, never a same-window mismatch.
+    let checked=false;
+    for(let attempt=0;attempt<3;attempt++){
+      let seeded;
+      await edit(db=>{
+        seeded=Math.floor(Date.now()/60000);
+        db.prepare("INSERT OR REPLACE INTO auth_limits VALUES('anonymous',?,60)").run(seeded);
+      });
+      const before=Math.floor(Date.now()/60000);
+      if(before!==seeded){console.log('PHASE7_AUTH_LIMIT_WINDOW_TRANSITION restart');continue;}
+      const response=await post(call,'/api/login/options');
+      const after=Math.floor(Date.now()/60000);
+      if(after!==seeded){console.log('PHASE7_AUTH_LIMIT_WINDOW_TRANSITION request');continue;}
+      assert.equal(response.status,429);
+      checked=true;break;
+    }
+    assert.ok(checked,'could not qualify rate limit in the seeded minute window');
+    console.log('PHASE7_AUTH_LIMIT_SEEDED_WINDOW PASS');
     await edit(db=>{
       db.exec('DELETE FROM auth_limits; DELETE FROM auth_challenges;');
       const insert=db.prepare('INSERT INTO auth_challenges VALUES(?,?,?)');
