@@ -1,0 +1,38 @@
+name: Phase 7 C0 feasibility (local only)
+on:
+  push:
+    branches: ['feat/cloudflare-migration']
+    paths: ['cloudflare-poc/test/c0/**', '.github/workflows/cloudflare-c0.yml']
+  workflow_dispatch:
+permissions:
+  contents: read
+env:
+  WRANGLER_SEND_METRICS: 'false'
+jobs:
+  c0-feasibility:
+    if: github.ref == 'refs/heads/feat/cloudflare-migration'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: cloudflare-poc
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1
+        with:
+          node-version: '26'
+      - run: npm ci --no-audit --no-fund
+      - name: C0 source-only qualification and process profile
+        run: |
+          mkdir -p reports/c0
+          set -o pipefail
+          /usr/bin/time -v -o reports/c0/process.txt node --test --test-concurrency=1 test/c0/*.test.mjs | tee reports/c0/tests.tap
+      - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f
+        if: always()
+        with:
+          name: phase7-c0-feasibility
+          path: cloudflare-poc/reports/c0/
+          if-no-files-found: error
+          retention-days: 7
