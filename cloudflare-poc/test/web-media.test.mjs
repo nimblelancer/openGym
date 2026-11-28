@@ -541,6 +541,28 @@ test('Phase 7: bounded owner bucket enumeration with real local R2 and independe
     const retained=[...copies.keys()].find(h=>h!==primary.hash);
     const missing=await auditOwnerBucketMedia({...args,readBackup:async h=>h===retained?null:copies.get(h)});
     assert.equal(missing.knownMediaVerified,false);assert.ok(missing.issues.includes('backup-not-verified'));
+    // Same-size altered backup bytes must fail independent SHA verification.
+    const corrupt=await auditOwnerBucketMedia({...args,readBackup:async h=>{
+      const original=copies.get(h);
+      if(h!==retained)return original;
+      const bytes=new Uint8Array(await original.arrayBuffer());bytes[0]^=1;
+      return new Blob([bytes],{type:original.type});
+    }});
+    assert.equal(corrupt.knownMediaVerified,false);
+    assert.ok(corrupt.issues.includes('backup-not-verified'));
+    assert.equal(corrupt.records.find(r=>r.hash===retained).backup,'invalid');
+    assert.equal(corrupt.records.find(r=>r.hash===retained).destination,'verified');
+    // Same owner, different server generation: identity alone cannot authorize
+    // completion. The caller must bind isCurrent to the captured generation.
+    let generation=1,backupCalls=0,destinationReads=0;
+    const expectedGeneration=generation;
+    await assert.rejects(auditOwnerBucketMedia({...args,
+      bucket:{...observed,get:async key=>{destinationReads++;return observed.get(key);}},
+      isCurrent:async uid=>uid===owner&&generation===expectedGeneration,
+      readBackup:async h=>{backupCalls++;generation++;return copies.get(h);}
+    }),/migration snapshot or owner changed/);
+    assert.equal(backupCalls,1);assert.equal(destinationReads,0);
+    console.log('PHASE7_LOCAL_R2_GENERATION_AND_BACKUP_BYTES_FENCE PASS');
     let changed=false;
     await assert.rejects(auditOwnerBucketMedia({...args,readBackup:async h=>{
       if(!changed){changed=true;await put(owner,Buffer.from('new retained object'));}

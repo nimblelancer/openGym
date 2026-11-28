@@ -901,3 +901,45 @@ it('Phase 7: malformed owner-bound stash is not auto-adopted and valid explicit 
   expect(ids(srv.doc.workouts)).not.toContain('foreign-workout')
   expect(await store.getState().keptState(BASE, USER.id)).toBeNull()
 })
+
+it('Phase 7: adoption cleanup retains a newer publication and foreign entry during acknowledged push', async () => {
+  pairedPhone()
+  h.server = refusing
+  const store = await freshStore()
+  await store.getState().boot()
+  store.getState().update(s => { s.workouts.push(workout('owed-before-adoption', '2026-09-15')) })
+  await store.getState().pushState()
+  expect(await store.getState().disconnectServer({ force: true })).toMatchObject({ stashed: true })
+  const key = BASE + '|' + USER.id
+  const previous = readFile('opengym-stash.json')[key]
+  expect(ids(previous.state.workouts)).toContain('owed-before-adoption')
+  const foreignKey = BASE + '|foreign'
+  const newer = { ...previous, at: previous.at + 1,
+    state: { ...clone(previous.state), workouts: [...previous.state.workouts, workout('published-during-ack', '2026-09-16')] } }
+  const foreign = { server: BASE, uid: 'foreign', name: 'synthetic', at: previous.at + 2,
+    state: { ...clone(DEF), workouts: [workout('foreign-only', '2026-09-17')] } }
+  const srv = serverWith(SERVER_STATE)
+  let published = false
+  h.server = (path, method, init) => {
+    const result = srv.handle(path, method, init)
+    if (!published && path === '/api/data' && method === 'PUT' && result.ok &&
+        ids(JSON.parse(init.body).state.workouts).includes('owed-before-adoption')) {
+      // Model a separate publisher between initial read and final cleanup.
+      // This is controlled interleaving, not a distributed lock guarantee.
+      published = true
+      const bytes = JSON.stringify({ [key]: newer, [foreignKey]: foreign })
+      localStorage.setItem('gym_stash', bytes)
+      h.files.set('DATA/opengym-stash.json', bytes)
+    }
+    return result
+  }
+  await store.getState().connectToServer(BASE, 'ABCD2345', async () => false)
+  expect(published).toBe(true)
+  expect(ids(srv.doc.workouts)).toContain('owed-before-adoption')
+  expect(ids(srv.doc.workouts)).not.toContain('foreign-only')
+  expect(ids(store.getState().S.workouts)).not.toContain('foreign-only')
+  expect(localStorage.getItem('gym_owner')).toBe(USER.id)
+  expect(JSON.parse(localStorage.getItem('gym_stash'))).toEqual({ [key]: newer, [foreignKey]: foreign })
+  expect(readFile('opengym-stash.json')).toEqual({ [key]: newer, [foreignKey]: foreign })
+  console.log('PHASE7_CONCURRENT_STASH_CLEANUP_FENCE PASS')
+})
