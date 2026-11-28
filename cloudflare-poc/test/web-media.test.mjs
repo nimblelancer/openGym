@@ -591,6 +591,36 @@ test('Phase 7: bounded owner bucket enumeration with real local R2 and independe
       assert.equal(stable.enumeratedDestinationCount,101);
       assert.ok(stable.records.every(r=>r.backup==='verified'&&r.destination==='verified'));
       assert.equal(stable.cutoverAuthorized,false);
+      // Reconcile the exact independent disk inventory, not just a count or
+      // a callback returning the original in-memory Blob. This fixture covers
+      // the enumerated owner bucket, not every source/device/stash inventory.
+      assert.deepEqual(stable.records.map(r=>r.hash).sort(),diskHashes);
+      let diskBytes=0;
+      for(const h of diskHashes){
+        const bytes=await readFile(join(disk,h));
+        assert.equal(sha(bytes),h);
+        assert.equal(bytes.length,copies.get(h).size);
+        diskBytes+=bytes.length;
+      }
+      assert.equal(stable.minimumDestination.count,diskHashes.length);
+      assert.equal(stable.minimumDestination.bytes,diskBytes);
+      const retainedPath=join(disk,retained);
+      const originalBytes=await readFile(retainedPath);
+      const changedBytes=Buffer.from(originalBytes);
+      changedBytes[0]^=1;
+      try{
+        await writeFile(retainedPath,changedBytes);
+        const damaged=await auditOwnerBucketMedia({...args,isCurrent:diskFence,readBackup:diskRead});
+        assert.equal(damaged.knownMediaVerified,false);
+        assert.ok(damaged.issues.includes('backup-not-verified'));
+        assert.equal(damaged.records.find(r=>r.hash===retained).backup,'invalid');
+        assert.equal(damaged.records.find(r=>r.hash===retained).destination,'verified');
+        assert.equal(damaged.cutoverAuthorized,false);
+        assert.deepEqual(await readFile(retainedPath),changedBytes);
+      }finally{await writeFile(retainedPath,originalBytes);}
+      assert.deepEqual(await readFile(retainedPath),originalBytes);
+      assert.equal(sha(await readFile(retainedPath)),retained);
+      console.log('PHASE7_INDEPENDENT_DISK_INVENTORY_BYTES_FENCE PASS');
       for(const next of [{owner,generation:2},{owner:foreign,generation:1}]){
         await writeFile(fenceFile,JSON.stringify(baseline));
         let backupCalls=0,destinationReads=0;
