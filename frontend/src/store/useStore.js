@@ -1193,17 +1193,21 @@ export const useStore = create((set, get) => {
         throw new Error('invalid stash entry')
     }
   }
-  const readStashes = async ({ strict = false, load } = {}) => {
+  const readStashes = async ({ strict = false, load, snapshot } = {}) => {
     let all = {}
     try {
       const raw = localStorage.getItem(STASH_KEY)
       all = raw === null ? {} : JSON.parse(raw)
       if (!stashObject(all)) throw new Error('invalid stash inventory')
       if (strict) validateStashInventory(all)
+      if (snapshot) snapshot.local = raw
     } catch (e) { if (strict) throw e; all = {} }
     if (MOBILE) {
       const f = await readJsonFile(STASH_FILE, { strict, load })
       if (strict && f !== null) validateStashInventory(f)
+      // Capture the individual medium before merging; a newer tombstone in
+      // the other medium must not mask a changed native inventory.
+      if (snapshot) snapshot.native = JSON.stringify(f)
       if (f && typeof f === 'object') {
         // Either medium may have refused the last write. Do not let an older native
         // entry hide the newer localStorage copy (or the reverse).
@@ -1257,16 +1261,41 @@ export const useStore = create((set, get) => {
     set({ keptRev: get().keptRev + 1 })
     return both && MOBILE ? ok && nativeOK : ok || nativeOK
   }
+  // Adoption cleanup only: independently revalidate the raw browser inventory
+  // and the parsed native inventory, not just their timestamp-merged result.
+  // A changed or unreadable medium, owner/session or newly owed state stops
+  // cleanup without retrying a destructive write. This is a stale-read fence,
+  // not a native compare-and-swap or a lock shared by independent processes.
+  const stashSnapshotMatches = async (snapshot, load, isAllowed) => {
+    try {
+      if (!isAllowed() || localStorage.getItem(STASH_KEY) !== snapshot.local) return false
+      const native = await readJsonFile(STASH_FILE, { strict: true, load })
+      if (native !== null) validateStashInventory(native)
+      return JSON.stringify(native) === snapshot.native &&
+        localStorage.getItem(STASH_KEY) === snapshot.local && isAllowed()
+    } catch { return false }
+  }
   // Publish the deletion before removing its marker. If one medium is unavailable,
   // the newer marker suppresses the old entry on that medium on the next read.
-  const clearStashes = async (all, keys) => {
+  const clearStashes = async (all, keys, { snapshot, load, isAllowed = () => true } = {}) => {
     if (!keys.length) return true
     if (!MOBILE) {
       for (const key of keys) delete all[key]
       return writeStashes(all)
     }
+    // The cleanup reread may have returned a stale native snapshot while an
+    // independent process published newer bytes. Do not write a tombstone
+    // unless both original media and the adoption authority still match.
+    if (snapshot && !await stashSnapshotMatches(snapshot, load, isAllowed)) return false
     for (const key of keys) all[key] = { at: stashAt(all[key]), cleared: true }
     if (!await writeStashes(all, { both: true })) return false
+    // Even an exact write readback can already be stale by the time it is
+    // consumed. Re-read both media before compaction; leave a verified
+    // tombstone alone if a publisher has since changed either medium.
+    if (snapshot) {
+      const serialized = JSON.stringify(all)
+      if (!await stashSnapshotMatches({ local: serialized, native: serialized }, load, isAllowed)) return false
+    }
     const compact = Object.fromEntries(Object.entries(all).filter(([, entry]) => !entry?.cleared))
     return writeStashes(compact)
   }
@@ -1481,9 +1510,11 @@ export const useStore = create((set, get) => {
     // Read once more, so a stash written meanwhile is not written over with the older read.
     await withStashLock(async () => {
       let now
-      try { now = await readStashes({ strict: true, load }) } catch { return }
-      if (!isCurrent(tok) || readOwner() !== owner || (MOBILE && get().unsyncedChanges().owed)) return
-      await clearStashes(now, keys.filter(k => sameStash(now[k], all[k])))
+      const snapshot = MOBILE ? {} : undefined
+      const isAllowed = () => isCurrent(tok) && readOwner() === owner && (!MOBILE || !get().unsyncedChanges().owed)
+      try { now = await readStashes({ strict: true, load, snapshot }) } catch { return }
+      if (!isAllowed()) return
+      await clearStashes(now, keys.filter(k => sameStash(now[k], all[k])), { snapshot, load, isAllowed })
     })
   }
 

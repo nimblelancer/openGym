@@ -879,6 +879,8 @@ test('verified encrypted disk fixture restores known state/media to an independe
     assert.deepEqual(await source.state(),exported);
     assert.deepEqual(await readFile(archivePath),encrypted);
     assert.deepEqual(await readFile(legacyPath),legacyArchive);
+    // CI 46144285648 qualified this actual local HTTP authority fence.
+    // Keep it in the full regression run for the independent stash cleanup fix.
     console.log('PHASE7_LOCAL_HTTP_AUTHORITY_FENCE PASS');
   }finally{key.fill(0);await source.runner.cleanup();await target.runner.cleanup();await rm(backupDir,{recursive:true,force:true});}
 });

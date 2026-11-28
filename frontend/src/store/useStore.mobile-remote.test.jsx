@@ -1096,6 +1096,10 @@ it.each(['cleanup-reread', 'tombstone-readback'])('Phase 7: cross-process stash 
     expect(ids(srv.doc.workouts)).not.toContain('late-foreign-edit')
     expect(localStorage.getItem('gym_owner')).toBe(USER.id)
     expect(retained, 'a later cleanup must not overwrite the independent publication').toBe(true)
+    // A successful fence must stop before any further native write, not
+    // overwrite the child publication and later reconstruct equivalent data.
+    expect(writesAfterPublication).toBe(0)
+    expect(tombstoneWrites).toBe(windowName === 'cleanup-reread' ? 0 : 1)
     expect(await store.getState().keptState(BASE, USER.id)).toEqual(newer.state)
     expect(await store.getState().keptState(BASE, 'foreign')).toEqual(foreign.state)
     expect(readFileSync(file, 'utf8')).toBe(expectedBytes)
