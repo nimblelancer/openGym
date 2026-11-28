@@ -71,8 +71,9 @@ export function parse(bytes,{exact=false}={}) {
   const result=value(0);ws();requireThat(i===raw.length);const encoded=canonical(result);if(exact)requireThat(encoded===raw);return result;
 }
 export function serverIdentity(s){
-  requireThat(str(s)&&s.trim()===s&&s.length>0&&!/[\\%?#]/.test(s)&&!/(?:^|\/)\.{1,2}(?:\/|$)/.test(s));
+  requireThat(str(s)&&s.trim()===s&&s.length>0&&!/[\s\\%?#]/.test(s)&&!/(?:^|\/)\.{1,2}(?:\/|$)/.test(s));
   requireThat(!/^[a-z][a-z0-9+.-]*:\/\//i.test(s)||/^https?:\/\//i.test(s));
+  requireThat(!/^https?:\/(?!\/)/i.test(s)&&!/^https?:\/\/\//i.test(s));
   const u=new URL(/^https?:\/\//i.test(s)?s:'https://'+s);
   requireThat(['http:','https:'].includes(u.protocol)&&!u.username&&!u.password&&!u.search&&!u.hash);
   const result=u.origin+u.pathname.replace(/\/+$/,'');requireThat(!result.includes('%'));return result;
@@ -114,7 +115,7 @@ export function validateBody(type,b){
   array(b.localProof.media,x=>{keys(x,'entryId sha256 byteLength evidence');h(x.entryId);h(x.sha256);n(x.byteLength);byteRef(x.evidence)});
 }
 export function record(type,body,recordId=id()){
-  h(recordId);canonical(body);validateBody(type,body);
+  h(recordId);canonical(body);validateBody(type,body);requireThat(type!=='entry'||body.eventId!==recordId);
   return {schema:'opengym.stash-retention',version:1,type,id:recordId,body,bodyDigest:D(type,canonical(body))};
 }
 export function decode(bytes,recordId){const r=parse(bytes,{exact:true});keys(r,'schema version type id body bodyDigest');requireThat(r.id===recordId&&same(r,record(r.type,r.body,r.id)));return r}

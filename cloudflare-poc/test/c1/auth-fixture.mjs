@@ -8,7 +8,7 @@ import {createServer} from 'node:http';
 import {once} from 'node:events';
 const secret=()=>randomBytes(32).toString('hex');
 export async function server(t,name){
-  const AUTH_SECRET=secret(),SETUP_CODE=secret();
+  const AUTH_SECRET=secret(),SETUP_CODE=secret();let fixtureGeneration=secret();
   const runner=await localRunner('wrangler.api.jsonc',{health:'/api/health',privateLogs:true,vars:origin=>({AUTH_SECRET,SETUP_CODE,API_ORIGIN:origin,RP_ID:'localhost'})});
   t.after(()=>runner.cleanup());
   await runner.start();
@@ -37,7 +37,7 @@ export async function server(t,name){
   assert.equal(redeem.status,200);token=redeem.body.token;assert.ok(token);
   assert.equal(redeem.body.user.id===reg.body.user.id,true);
   const me=await send('/api/me');assert.equal(me.status,200);assert.equal(me.body.user.id===reg.body.user.id,true);
-  return {base:runner.base,uid:reg.body.user.id,send,revoke:()=>post('/api/logout/all',{}),async get(){const r=await send('/api/data');assert.equal(r.status,200);return r.body}};
+  return {base:runner.base,uid:reg.body.user.id,send,get fixtureGeneration(){return fixtureGeneration},async restart(){fixtureGeneration=secret();await runner.stop();await runner.start()},revoke:()=>post('/api/logout/all',{}),async get(){const r=await send('/api/data');assert.equal(r.status,200);return r.body}};
 }
 
 // Actual HTTP disconnect at a local forwarding boundary. Before: no upstream

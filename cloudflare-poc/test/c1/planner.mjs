@@ -9,20 +9,21 @@ const B=v=>Buffer.from(canonical(v));
 const equal=(a,b)=>a!==undefined&&b!==undefined&&same(a,b);
 const HOLD=reason=>({status:'RECOVERY_HOLD',reason});
 export function scope(inv,auth,fresh=new Set()){
-  const raw=[...inv.raw.keys()], statuses=[], seen=new Map();let complete=inv.complete;
+  const raw=[...inv.raw.keys()], statuses=[], seen=new Map(),digests=new Map();let complete=inv.complete&&validGraph(inv);
   for(const r of inv.records.values())if(r.type==='entry'){
     try{
       resolveEntry(inv,refEntry(r));
-      const b=r.body, prev=seen.get(b.eventId);if(prev&&!same(logical(prev.body),logical(b)))throw Error('event collision');seen.set(b.eventId,r);
+      const b=r.body, prev=seen.get(b.eventId);if(prev&&!same(logical(prev.body),logical(b)))throw Error('event collision');seen.set(b.eventId,r);const previous=digests.get(b.logicalDigest);if(previous&&!same(logical(previous.body),logical(b)))throw Error('digest collision');digests.set(b.logicalDigest,r);
       const attempted=[...inv.records.values()].some(x=>x.type==='intent'&&x.body.entries.some(e=>e.eventId===b.eventId));
-      statuses.push({id:r.id,eventId:b.eventId,status:b.owner!==auth.owner||b.server!==auth.server?'FOREIGN':
-        ['manual','legacy-unbound'].includes(b.kind)?'MANUAL_ONLY':
+      statuses.push({id:r.id,eventId:b.eventId,status:['manual','legacy-unbound'].includes(b.kind)?'MANUAL_ONLY':
+        b.owner!==auth.owner||b.server!==auth.server?'FOREIGN':
         fresh.has(b.eventId)&&b.source.medium==='synthetic-new-event'&&!attempted?'PLAN_ELIGIBLE':'RECOVERY_HOLD'});
     }catch{complete=false;statuses.push({id:r.id,status:'CORRUPT_OR_UNREADABLE'})}
   }
   // Any legacy or mirror source stays in raw inventory, regardless of logical status.
   if(!complete)for(const s of statuses)if(s.status==='PLAN_ELIGIBLE')s.status='RECOVERY_HOLD';
-  return {raw,statuses,complete};
+  const legacy=[];for(const path of ['gym_stash','opengym-stash.json'])if(inv.raw.has(path)){try{for(const [selector,e] of Object.entries(parse(inv.raw.get(path))))legacy.push({path,selector,status:e.cleared?'RAW_RETAINED':'RECOVERY_HOLD'})}catch{complete=false}}
+  return {raw,statuses,legacy,complete};
 }
 // Enumerate actual application refs plus a conservative structural scan that
 // refuses malformed hash/size shapes (including unknown future refs).
@@ -76,8 +77,8 @@ export function plan(inv,auth,fresh,base,refs,{conflictEvents=new Set()}={}){
 }
 export function compare(inv,intent,observation,auth,localProof){
   try{
-    requireThat(inv.complete&&rawMedia(inv).complete&&intent.type==='intent');
-    const b=intent.body;requireThat(b.owner===auth.owner&&b.server===auth.server&&b.epochId===auth.epochId&&observation.epochId===auth.epochId&&observation.server===auth.server);
+    requireThat(inv.complete&&validGraph(inv)&&rawMedia(inv).complete&&intent.type==='intent');
+    const b=intent.body;requireThat(b.owner===auth.owner&&b.server===auth.server&&b.epochId===auth.epochId&&observation.epochId===auth.epochId&&observation.server===auth.server&&typeof auth.fixtureGeneration==='string'&&observation.fixtureGeneration===auth.fixtureGeneration);
     const stored=inv.records.get(intent.id);requireThat(stored&&same(stored,intent));
     const es=b.entries.map(e=>resolveEntry(inv,e));
     requireThat(es.every(r=>r.body.owner===b.owner&&r.body.server===b.server&&r.body.kind==='owned'));
@@ -118,6 +119,8 @@ export function compare(inv,intent,observation,auth,localProof){
       requireThat(e.owner===b.owner&&e.server===b.server&&same(e.active,source)&&sha(B(e.active))===a.digest);
       // Proof must match a currently inventoried owner-tagged synthetic mirror.
       requireThat(['opengym-state.json','opengym-state.next.json'].some(path=>inv.raw.get(path)?.equals(resolveBytes(inv,p.evidence))));
+      for(const path of ['opengym-state.json','opengym-state.next.json'])if(inv.raw.has(path)){const m=parse(inv.raw.get(path));if(m.owner===b.owner&&m.server===b.server&&m.active!=null)requireThat(same(m.active,source))}
+      for(const path of ['gym_stash','opengym-stash.json'])if(inv.raw.has(path))for(const e of Object.values(parse(inv.raw.get(path))))if(e.uid===b.owner&&e.server===b.server&&e.state?.active!=null)requireThat(same(e.state.active,source));
     }
     for(const f of b.obligations.media){const p=localProof.media.find(x=>x.entryId===f.entryId&&x.sha256===f.sha256&&x.byteLength===f.byteLength);requireThat(p);const bytes=resolveBytes(inv,p.evidence);requireThat(sha(bytes)===f.sha256&&bytes.length===f.byteLength)}
     return {status:'RECEIPT_CANDIDATE',ack:{rev:ack.rev,wid:ack.wid},doc,dispositions,localProof};
@@ -136,4 +139,35 @@ export function receiptStatus(inv,receipt,auth,live,observation){
       const proof=parse(resolveBytes(inv,actual.evidence),{exact:true});requireThat(same(proof,{proof:d.proof,digest:D('disposition',canonical(d.proof))}))}
     return {status:'ACKNOWLEDGED_RETAINED_SCOPED'};
   }catch{return HOLD('receipt-authority')}
+}
+
+// All referenced evidence must resolve; unknown/missing historical metadata
+// cannot be treated as a complete inventory. This is graph integrity, not ACK.
+export function validGraph(inv){
+  try{
+    requireThat(inv.complete);const attempts=new Set();
+    for(const r of inv.records.values()){
+      const b=r.body;
+      if(r.type==='entry'){resolveEntry(inv,refEntry(r));continue}
+      const entries=b.entries.map(e=>resolveEntry(inv,e));
+      requireThat(entries.every(e=>e.body.owner===b.owner&&e.body.server===b.server));
+      if(r.type==='intent'){
+        requireThat(!attempts.has(b.attemptId));attempts.add(b.attemptId);
+        const raw=resolveBytes(inv,b.base.stateBytes),state=parse(raw,{exact:true});
+        requireThat(D('base-client-state',raw)===b.base.stateDigest&&(state===null?b.base.rev===0&&b.base.wid===null:state._rev===b.base.rev&&state._wid===b.base.wid));
+        const planned=resolveBytes(inv,b.planned.stateBytes),wire=resolveBytes(inv,b.wire),w=parse(wire);
+        keys(w,b.base.rev===0?'state baseRev stamped':'state baseRev baseWid stamped');
+        requireThat(typeof w.stamped==='boolean'&&w.baseRev===b.base.rev&&(w.baseWid??null)===b.base.wid&&D('planned-state',planned)===b.planned.stateDigest&&D('wire',wire)===b.wireDigest&&same(parse(planned,{exact:true}),w.state)&&same(obligations(entries),b.obligations));
+      }else{
+        const intent=inv.records.get(b.intent.id);requireThat(intent?.type==='intent'&&intent.bodyDigest===b.intent.bodyDigest);
+        const a=intent.body;requireThat(b.attemptId===a.attemptId&&b.owner===a.owner&&b.server===a.server&&b.epochId===a.epochId&&b.wireDigest===a.wireDigest&&same(b.entries,a.entries));
+        const bytes=resolveBytes(inv,b.committed.stateBytes),state=parse(bytes,{exact:true});
+        requireThat(D('committed-client-state',bytes)===b.committed.stateDigest&&state?._wid===b.committed.wid&&state?._rev===b.committed.rev&&b.ack.wid===b.committed.wid&&b.ack.rev===a.base.rev+1);
+        for(const d of b.disposition){const e=parse(resolveBytes(inv,d.evidence),{exact:true});keys(e,'proof digest');requireThat(e.digest===D('disposition',canonical(e.proof)))}
+        for(const p of b.localProof.active)resolveBytes(inv,p.evidence);
+        for(const p of b.localProof.media){const bytes=resolveBytes(inv,p.evidence);requireThat(sha(bytes)===p.sha256&&bytes.length===p.byteLength)}
+      }
+    }
+    return true;
+  }catch{return false}
 }

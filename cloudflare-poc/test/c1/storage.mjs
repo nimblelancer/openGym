@@ -1,6 +1,6 @@
 // Disposable fixture filesystem only; no native exclusive-create, lock or fsync.
 import { diskAdapter } from '../c0/disk-adapter.mjs';
-import { stat } from 'node:fs/promises';
+import { lstat } from 'node:fs/promises';
 import { join } from 'node:path';
 import { LIMIT, requireThat, hex, id, sha, canonical, decode, byteRef, parse, same, logical, serverIdentity, obj } from './contract.mjs';
 const DIRECTORY='DATA', REC='p7-c1-records', EVD='p7-c1-evidence';
@@ -12,7 +12,7 @@ export async function bounded(fn,ms=LIMIT.io) {
 }
 export function adapter(root,fault={}){
   const fs=diskAdapter(root,fault);
-  return {...fs,async size(path){return (await stat(join(root,path))).size}};
+  return {...fs,async size(path){const s=await lstat(join(root,path));requireThat(s.isFile());return s.size}};
 }
 async function list(fs,path,remaining){
   const r=await bounded(()=>fs.readdir({path,directory:DIRECTORY}),remaining());
@@ -27,9 +27,9 @@ async function exact(fs,path,remaining,budget){
   requireThat(typeof data==='string'&&data.length<=Math.ceil(LIMIT.bytes/3)*4);
   const b=Buffer.from(data,'base64');requireThat(b.toString('base64')===data&&b.length<=LIMIT.bytes&&b.length<=budget);return b;
 }
-const deadline=()=>{const start=Date.now();return ()=>{const left=LIMIT.operation-(Date.now()-start);requireThat(left>0);return Math.min(left,LIMIT.io)}};
-export async function inventory(fs){
-  const remaining=deadline(), raw=new Map(), records=new Map(), held=[];let budget=LIMIT.total;
+const deadline=(until=Date.now()+LIMIT.operation)=>()=>{const left=until-Date.now();requireThat(left>0);return Math.min(left,LIMIT.io)};
+export async function inventory(fs,until=Date.now()+LIMIT.operation){
+  const remaining=deadline(until), raw=new Map(), records=new Map(), held=[];let budget=LIMIT.total;
   try{
     const root=await list(fs,'',remaining), paths=[];
     for(const name of root){
@@ -68,10 +68,10 @@ export function resolveEntry(inv,ref){
   }
   return r;
 }
-export async function publish(fs,path,bytes){
+export async function publish(fs,path,bytes,until=Date.now()+LIMIT.operation){
   requireThat(Buffer.isBuffer(bytes)&&bytes.length<=LIMIT.bytes);
-  const remaining=deadline(),root=await list(fs,'',remaining),[ns,name]=path.split('/');
-  requireThat([REC,EVD].includes(ns)&&name&&/^[a-f0-9]{64}\.(json|bin)$/.test(name));
+  const remaining=deadline(until),root=await list(fs,'',remaining),[ns,name]=path.split('/');
+  requireThat(ns===REC?/^[a-f0-9]{64}\.json$/.test(name):ns===EVD&&/^[a-f0-9]{64}\.bin$/.test(name));
   if(root.includes(ns))requireThat(!(await list(fs,ns,remaining)).includes(name));
   await bounded(()=>fs.writeFile({path,directory:DIRECTORY,data:bytes.toString('base64'),recursive:true}),remaining());
   requireThat((await exact(fs,path,remaining,LIMIT.bytes)).equals(bytes));return path;
@@ -80,9 +80,25 @@ export async function publish(fs,path,bytes){
 // publications cause HOLD, never replacement. Checks are observations, not CAS.
 export async function vault(fs){
   let expected=await inventory(fs);requireThat(expected.complete);
-  const check=async()=>{const current=await inventory(fs);requireThat(rawMatches(expected,current));return current};
-  const add=async(path,bytes)=>{await check();await publish(fs,path,bytes);const next=new Map(expected.raw);next.set(path,bytes);expected={...expected,raw:next};expected=await check();return expected};
-  return {check,async evidence(bytes){const i=id();await add(evidencePath(i),bytes);return {id:i,sha256:sha(bytes),byteLength:bytes.length}},
-    async record(r){const bytes=Buffer.from(canonical(r));decode(bytes,r.id);await add(recordPath(r.id),bytes);return r}};
+  const check=async(until=Date.now()+LIMIT.operation)=>{const current=await inventory(fs,until);requireThat(rawMatches(expected,current));return current};
+  const add=async(path,bytes,until)=>{await check(until);await publish(fs,path,bytes,until);const next=new Map(expected.raw);next.set(path,bytes);expected={...expected,raw:next};expected=await check(until);return expected};
+  return {check,async evidence(bytes,until=Date.now()+LIMIT.operation){const i=id();await add(evidencePath(i),bytes,until);return {id:i,sha256:sha(bytes),byteLength:bytes.length}},
+    async record(r,until=Date.now()+LIMIT.operation){const bytes=Buffer.from(canonical(r));decode(bytes,r.id);await add(recordPath(r.id),bytes,until);return r}};
 }
 export {recordPath,evidencePath};
+
+// Read-only union of independently enumerated synthetic media. Duplicate
+// physical copies stay listed; divergent same-path bytes invalidate authority.
+export function unionInventories(media){
+  const raw=new Map(),records=new Map(),copies=[],held=[];let bytes=0;
+  for(const {medium,inventory:i} of media){
+    if(!i.complete)held.push('medium-incomplete');
+    for(const [path,b] of i.raw){copies.push({medium,path,bytes:b});bytes+=b.length;
+      if(raw.has(path)&&!raw.get(path).equals(b))held.push('same-path-divergence');
+      else raw.set(path,b);
+    }
+    for(const [key,r] of i.records){if(records.has(key)&&!same(records.get(key),r))held.push('record-collision');else records.set(key,r)}
+  }
+  if(bytes>LIMIT.total)held.push('union-budget');
+  return {raw,records,copies,held,complete:held.length===0,bytes};
+}
