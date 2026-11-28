@@ -649,6 +649,37 @@ describe('stash failure hardening', () => {
     await store.getState().pushState()
     return store
   }
+  it.each(['local', 'native'])('refuses malformed %s stash inventory before logout and allows explicit retry', async medium => {
+    const store = await addOwed()
+    const pairing = readFile('opengym-remote.json')
+    const valid = { server: BASE, uid: USER.id, name: USER.name, at: 1234, state: clone(SERVER_STATE) }
+    const older = JSON.stringify({ [key]: valid })
+    const corrupt = [
+      null, { ...valid, at: '9999' }, { ...valid, uid: 'foreign' },
+      { ...valid, server: 'https://other.example.com' }, { ...valid, state: [] },
+      { at: 9999, cleared: true, state: valid.state },
+    ]
+    for (const entry of corrupt) {
+      const bad = JSON.stringify({ [key]: entry })
+      const local = medium === 'local' ? bad : older
+      const native = medium === 'native' ? bad : older
+      localStorage.setItem('gym_stash', local)
+      h.files.set('DATA/opengym-stash.json', native)
+      expect(await store.getState().disconnectServer({ force: true })).toMatchObject({ owed: true, stashed: false })
+      expect(localStorage.getItem('gym_stash')).toBe(local)
+      expect(h.files.get('DATA/opengym-stash.json')).toBe(native)
+      expect(localStorage.getItem('gym_owner')).toBe(USER.id)
+      expect(store.getState().user).toEqual(USER)
+      expect(readFile('opengym-remote.json')).toEqual(pairing)
+      expect(ids(store.getState().S.workouts)).toContain('owed')
+      expect(h.calls.some(c => c.url.endsWith('/api/logout'))).toBe(false)
+    }
+    // Restore the synthetic fixture's known valid inventory, not a silent repair.
+    localStorage.setItem('gym_stash', older)
+    h.files.set('DATA/opengym-stash.json', older)
+    expect(await store.getState().disconnectServer({ force: true })).toMatchObject({ stashed: true })
+    expect(ids(readFile('opengym-stash.json')[key].state.workouts)).toContain('owed')
+  })
   it('refuses switching accounts before changing credentials if both stash writes fail', async () => {
     const store = await addOwed()
     const old = readFile('opengym-remote.json')
@@ -834,6 +865,7 @@ it('Phase 7: edit during stash publication prevents logout and preserves the new
     release()
     expect(await disconnect).toMatchObject({ owed: true, stashed: false })
     expect(store.getState().user.id).toBe(USER.id)
+    expect(localStorage.getItem('gym_owner')).toBe(USER.id)
     expect(readFile('opengym-remote.json').mode).toBe('remote')
     expect(ids(store.getState().S.workouts)).toContain('during-stash')
     expect(h.calls.some(c => c.url.endsWith('/api/logout'))).toBe(false)
