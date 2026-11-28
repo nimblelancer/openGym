@@ -435,8 +435,9 @@ test('read-only migration audit verifies known bytes and fails closed on missing
   await assert.rejects(auditMigrationMedia({...retainedArgs,retainedInventory:{owner:'foreign',rows:[retained]}}),/foreign retained/);
   const lostRetained=await auditMigrationMedia({...retainedArgs,readBackup:async h=>h===retained.hash?null:blob});
   assert.equal(lostRetained.knownMediaVerified,false);assert.ok(lostRetained.issues.includes('backup-not-verified'));
-  let backupCalls=0;
-  await assert.rejects(auditMigrationMedia({...args,isCurrent:async()=>++backupCalls===1,readBackup:async()=>{assert.fail('must not read backup after fence fails');}}),/snapshot or owner changed/);
+  let fenceChecks=0,backupCalls=0,destinationCalls=0;
+  await assert.rejects(auditMigrationMedia({...args,isCurrent:async()=>++fenceChecks===1,readBackup:async()=>{backupCalls++;return blob;},readDestination:async()=>{destinationCalls++;return blob;}}),/snapshot or owner changed/);
+  assert.equal(backupCalls,0);assert.equal(destinationCalls,0);
   console.log('PHASE7_RETAINED_INVENTORY_FENCE PASS');
   console.log('PHASE5_PREFLIGHT_CAPACITY_LOCAL_ONLY_GATES PASS');
   console.log('PHASE5_MIGRATION_PREFLIGHT_INTEGRITY PASS');
