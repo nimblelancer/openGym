@@ -1019,3 +1019,89 @@ it('Phase 7: a separate process publishes native stash bytes during acknowledged
     rmSync(dir, { recursive: true, force: true })
   }
 }, 20000)
+
+// Exercise later windows than the already-qualified publication-before-reread
+// fixture. Return the exact bytes that the native read obtained, then let a
+// separate OS process publish before the awaiting store can use that snapshot.
+// A stale read is valid evidence of what was read, not authorization to overwrite.
+it.each(['cleanup-reread', 'tombstone-readback'])('Phase 7: cross-process stash publication at %s retains every newer entry', async windowName => {
+  pairedPhone()
+  h.server = refusing
+  const dir = mkdtempSync(join(tmpdir(), 'opengym-p7-stash-window-'))
+  const file = join(dir, 'opengym-stash.json')
+  const key = BASE + '|' + USER.id, foreignKey = BASE + '|foreign'
+  let ack = false, previous, expectedBytes, newer, foreign, published = false
+  let childDistinct = false, exactPublication = false, staleLocalAtPublication = false, writesAfterPublication = 0
+  let tombstoneWrites = 0
+  h.stashDisk = {
+    read: () => {
+      const snapshot = readFileSync(file, 'utf8')
+      const entry = JSON.parse(snapshot)[key]
+      const atWindow = windowName === 'cleanup-reread'
+        ? tombstoneWrites === 0 && entry?.cleared !== true && entry?.at === previous?.at
+        : tombstoneWrites === 1 && entry?.cleared === true
+      if (ack && !published && previous && atWindow) {
+        const at = Math.max(previous.at, entry.at) + 1
+        newer = { ...previous, at,
+          state: { ...clone(previous.state), workouts: [...previous.state.workouts, workout('late-process-edit', '2026-09-16')] } }
+        foreign = { server: BASE, uid: 'foreign', name: 'synthetic', at: at + 1,
+          state: { ...clone(DEF), workouts: [workout('late-foreign-edit', '2026-09-17')] } }
+        expectedBytes = JSON.stringify({ [key]: newer, [foreignKey]: foreign })
+        const pid = Number(execFileSync(process.execPath, ['-e',
+          'const fs=require("node:fs");const p=process.argv[1];fs.writeFileSync(p+".next",fs.readFileSync(0));fs.renameSync(p+".next",p);process.stdout.write(String(process.pid));',
+          file], { input: expectedBytes, encoding: 'utf8', timeout: 5000, maxBuffer: 1024 }))
+        childDistinct = Number.isSafeInteger(pid) && pid > 0 && pid !== process.pid
+        exactPublication = readFileSync(file, 'utf8') === expectedBytes
+        staleLocalAtPublication = localStorage.getItem('gym_stash') === snapshot
+        published = true
+      }
+      return snapshot
+    },
+    write: data => {
+      if (published) writesAfterPublication++
+      if (JSON.parse(data)[key]?.cleared === true) tombstoneWrites++
+      writeFileSync(file, data)
+    },
+  }
+  try {
+    const store = await freshStore()
+    await store.getState().boot()
+    store.getState().update(s => { s.workouts.push(workout('owed-window', '2026-09-15')) })
+    await store.getState().pushState()
+    expect(await store.getState().disconnectServer({ force: true })).toMatchObject({ stashed: true })
+    previous = JSON.parse(readFileSync(file, 'utf8'))[key]
+    expect(ids(previous.state.workouts)).toContain('owed-window')
+    const srv = serverWith(SERVER_STATE)
+    h.server = (path, method, init) => {
+      const result = srv.handle(path, method, init)
+      if (path === '/api/data' && method === 'PUT' && result.ok &&
+          ids(JSON.parse(init.body).state.workouts).includes('owed-window')) ack = true
+      return result
+    }
+    await store.getState().connectToServer(BASE, 'ABCD2345', async () => false)
+    const disk = readFileSync(file, 'utf8')
+    const retained = published && disk === expectedBytes
+    // Report only booleans/counts even when the preservation assertion fails.
+    console.log('PHASE7_CROSS_PROCESS_TOMBSTONE_WINDOW_OBSERVATION', JSON.stringify({
+      window: windowName, ack, published, childDistinct, exactPublication, staleLocalAtPublication,
+      tombstoneWrites, writesAfterPublication, retained,
+    }))
+    expect(ack).toBe(true)
+    expect(published).toBe(true)
+    expect(childDistinct).toBe(true)
+    expect(exactPublication).toBe(true)
+    expect(staleLocalAtPublication).toBe(true)
+    expect(ids(srv.doc.workouts)).toContain('owed-window')
+    expect(ids(srv.doc.workouts)).not.toContain('late-process-edit')
+    expect(ids(srv.doc.workouts)).not.toContain('late-foreign-edit')
+    expect(localStorage.getItem('gym_owner')).toBe(USER.id)
+    expect(retained, 'a later cleanup must not overwrite the independent publication').toBe(true)
+    expect(await store.getState().keptState(BASE, USER.id)).toEqual(newer.state)
+    expect(await store.getState().keptState(BASE, 'foreign')).toEqual(foreign.state)
+    expect(readFileSync(file, 'utf8')).toBe(expectedBytes)
+    console.log('PHASE7_CROSS_PROCESS_TOMBSTONE_WINDOW PASS', windowName)
+  } finally {
+    h.stashDisk = null
+    rmSync(dir, { recursive: true, force: true })
+  }
+}, 20000)

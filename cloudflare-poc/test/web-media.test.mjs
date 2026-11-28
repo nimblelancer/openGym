@@ -838,5 +838,47 @@ test('verified encrypted disk fixture restores known state/media to an independe
     console.log('PHASE5_OVERSIZED_ENCRYPTED_BACKUP_PRESERVED PASS');
     console.log('PHASE5_ENCRYPTED_DISK_BACKUP_RESTORE PASS');
     console.log('PHASE5_DESTINATION_OWNER_REVISION_PREFLIGHT PASS');
+    // Reuse the actual isolated authenticated Worker. The authority here is
+    // its /api/me and committed revision/write identity, not a synthetic
+    // generation file or a production-wide generation/transaction guarantee.
+    let backupReads=0,destinationReads=0,newer;
+    await assert.rejects(auditMigrationMedia({...makeAudit(committed),
+      readBackup:async h=>{
+        backupReads++;
+        const changed=structuredClone(committed.state);
+        delete changed._rev;delete changed._wid;
+        changed.workouts.push({id:'authority-fence-edit',d:'2026-09-21',start:3000,end:4000,entries:[]});
+        await target.save(changed,committed);
+        newer=await target.state();
+        return copies.get(h)||null;
+      },
+      readDestination:async h=>{destinationReads++;return target.read(h,destinationOwner);}
+    }),/migration snapshot or owner changed/);
+    assert.equal(backupReads,1);assert.equal(destinationReads,0);
+    assert.equal(newer.rev,committed.rev+1);
+    assert.notEqual(newer.state._wid,committed.state._wid);
+    assert.ok(newer.state.workouts.some(w=>w.id==='authority-fence-edit'));
+    assert.deepEqual(await target.state(),newer);
+    assert.equal(await target.current(destinationOwner,committed.rev,committed.state._wid),false);
+    assert.equal(await target.current(destinationOwner,newer.rev,newer.state._wid),true);
+    assert.equal(sha(Buffer.from(await (await target.read(hash,destinationOwner)).arrayBuffer())),hash);
+    assert.equal(sha(Buffer.from(await (await target.read(ah,destinationOwner)).arrayBuffer())),ah);
+    console.log('PHASE7_LOCAL_HTTP_REVISION_WRITE_IDENTITY_FENCE PASS');
+    backupReads=0;destinationReads=0;
+    await assert.rejects(auditMigrationMedia({...makeAudit(newer),
+      readBackup:async h=>{
+        backupReads++;
+        await target.json(await target.raw('/api/logout/all','POST',JSON.stringify({}),{'content-type':'application/json'}));
+        return copies.get(h)||null;
+      },
+      readDestination:async h=>{destinationReads++;return target.read(h,destinationOwner);}
+    }),/migration snapshot or owner changed/);
+    assert.equal(backupReads,1);assert.equal(destinationReads,0);
+    assert.equal((await target.raw('/api/me')).status,401);
+    assert.equal((await target.raw('/api/data')).status,401);
+    assert.deepEqual(await source.state(),exported);
+    assert.deepEqual(await readFile(archivePath),encrypted);
+    assert.deepEqual(await readFile(legacyPath),legacyArchive);
+    console.log('PHASE7_LOCAL_HTTP_AUTHORITY_FENCE PASS');
   }finally{key.fill(0);await source.runner.cleanup();await target.runner.cleanup();await rm(backupDir,{recursive:true,force:true});}
 });
