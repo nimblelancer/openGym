@@ -41,6 +41,8 @@ test('offline SQLite fault injection, expired challenges/codes, disabled account
     // The limiter resets at minute boundaries. Seed and restart can straddle
     // one; a response in another window is not evidence about the seeded bucket.
     // Retry only an observed window transition, never a same-window mismatch.
+    // CI 46130587524 observed a restart rollover, then the seeded-window
+    // 429 assertion passed. Keep this boundary guard, not a generic retry.
     let checked=false;
     for(let attempt=0;attempt<3;attempt++){
       let seeded;

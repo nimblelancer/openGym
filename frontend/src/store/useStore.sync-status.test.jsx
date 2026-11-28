@@ -501,30 +501,70 @@ describe('another account signing in on a copy that still owes the first', () =>
     expect(await useStore.getState().keptChanges()).toEqual([])
   })
 
-  it('on a device with no room for a second copy beside the first, the copy makes room for what it owed', async () => {
+  it('Phase 7: a full device retains the owed copy until capacity permits verified preservation', async () => {
     const S = { ...clone(DEF), _ts: 300, workouts: [workout('w1'), { ...workout('w-week', '2026-09-18'), note: 'x'.repeat(20000) }] }
     signedIn(S)
     localStorage.setItem('gym_state_v1', JSON.stringify(S))
     localStorage.setItem('gym_sync', JSON.stringify({ rev: 1, ts: 100 }))
     localStorage.setItem('gym_dirty', '1')
+    // Model the owner metadata written by a real successful sign-in.
+    localStorage.setItem('gym_owner_name', USER.name)
+    localStorage.setItem('gym_user', JSON.stringify(USER))
+    const previous = localStorage.getItem('gym_state_v1')
+    const previousSync = localStorage.getItem('gym_sync')
+    const previousStash = localStorage.getItem('gym_stash')
+    const previousAdopt = localStorage.getItem('gym_adopt')
     // A quota: room for one copy of this profile and a little more, never for two.
+    // Only unrelated synthetic filler may be removed to provide retry capacity.
+    const filler = 'p7_test_quota_pressure'
+    localStorage.setItem(filler, 'x'.repeat(previous.length * 2))
     const used = () => Object.keys(localStorage).reduce((n, k) => n + k.length + localStorage.getItem(k).length, 0)
     const quota = used() + 5000
     const setItem = localStorage.setItem.bind(localStorage)
+    let stashRefusals = 0
     const full = vi.spyOn(localStorage, 'setItem').mockImplementation((k, v) => {
       const prev = localStorage.getItem(k)
-      if (used() - (prev == null ? 0 : k.length + prev.length) + k.length + String(v).length > quota) throw new DOMException('The quota has been exceeded.', 'QuotaExceededError')
+      if (used() - (prev == null ? 0 : k.length + prev.length) + k.length + String(v).length > quota) {
+        if (k === 'gym_stash') stashRefusals++
+        throw new DOMException('The quota has been exceeded.', 'QuotaExceededError')
+      }
       return setItem(k, v)
     })
     try {
       api.mockImplementation(twosServer)
+      expect(() => useStore.getState().setUser({ id: 'user-2', name: 'Two' })).toThrow()
+      expect(stashRefusals).toBe(1)
+      expect(useStore.getState().user).toBeNull()
+      expect(useStore.getState().sync).toMatchObject({ held: true, auth: true, lastError: { code: 'stash-preservation-failed' } })
+      expect(useStore.getState().S).toEqual(S)
+      expect(localStorage.getItem('gym_state_v1')).toBe(previous)
+      expect(localStorage.getItem('gym_owner')).toBe(USER.id)
+      expect(localStorage.getItem('gym_owner_name')).toBe(USER.name)
+      expect(localStorage.getItem('gym_sync')).toBe(previousSync)
+      expect(localStorage.getItem('gym_dirty')).toBe('1')
+      expect(localStorage.getItem('gym_stash')).toBe(previousStash)
+      expect(localStorage.getItem('gym_adopt')).toBe(previousAdopt)
+      await useStore.getState().pushState()
+      await useStore.getState().pullState()
+      expect(paths()).toEqual([])
+
+      // Keep the same quota enforcement active. Free only unrelated space,
+      // not the live copy or an existing stash, then retry the same switch.
+      localStorage.removeItem(filler)
+      expect(localStorage.getItem('gym_state_v1')).toBe(previous)
       useStore.getState().setUser({ id: 'user-2', name: 'Two' })
       await useStore.getState().adoptProfile(async () => false)
+      expect(stashRefusals).toBe(1)
     } finally { full.mockRestore() }
 
+    // Retain all original successful-switch and owed-workout assertions.
     expect(ids(useStore.getState().S.workouts)).toEqual(['b1'])
     expect(await useStore.getState().keptChanges()).toEqual([{ server: location.origin, uid: USER.id, name: 'One', at: expect.any(Number) }])
     expect(ids(JSON.parse(localStorage.getItem('gym_stash'))[location.origin + '|' + USER.id].state.workouts)).toEqual(['w1', 'w-week'])
+    expect(JSON.parse(localStorage.getItem('gym_stash'))[location.origin + '|' + USER.id].state.workouts.find(w => w.id === 'w-week').note).toBe('x'.repeat(20000))
+    expect(localStorage.getItem('gym_owner')).toBe('user-2')
+    expect(puts()).toHaveLength(0)
+    console.log('PHASE7_LEGACY_QUOTA_FAIL_CLOSED_RETRY PASS')
   })
 
   it('names the first account, also when its session had already ended, and says when the kept changes move', async () => {
