@@ -27,6 +27,7 @@ jobs:
       - name: C1 source-only qualification and process profile
         run: |
           mkdir -p reports/c1
+          for source in test/c1/*.mjs; do node --check "$source"; done
           set -o pipefail
           /usr/bin/time -v -o reports/c1/process.txt node --test --test-reporter=tap --test-concurrency=1 test/c1/*.test.mjs | tee reports/c1/tests.tap
       - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f

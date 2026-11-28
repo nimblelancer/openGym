@@ -8,7 +8,7 @@ const sources=['gym_stash','opengym-stash.json','opengym-state.json','opengym-st
 const pathFor=(ns,i,ext)=>{requireThat(hex(i));return ns+'/'+i+ext};
 const recordPath=i=>pathFor(REC,i,'.json'), evidencePath=i=>pathFor(EVD,i,'.bin');
 export async function bounded(fn,ms=LIMIT.io) {
-  let timer;try{return await Promise.race([Promise.resolve().then(fn),new Promise((_,reject)=>{timer=setTimeout(()=>reject(Error('C1 I/O deadline')),ms)})]}finally{clearTimeout(timer)}
+  let timer;try{return await Promise.race([Promise.resolve().then(fn),new Promise((_,reject)=>{timer=setTimeout(()=>reject(Error('C1 I/O deadline')),ms)})])}finally{clearTimeout(timer)}
 }
 export function adapter(root,fault={}){
   const fs=diskAdapter(root,fault);
