@@ -66,9 +66,10 @@ export function fsBackend({
     if (!r.ok) throw new Error('read ' + r.status)
     return r.blob()
   }
-  const saveIndex = () => {
-    writing = writing.then(() => FS.writeFile({ ...opts(INDEX), data: JSON.stringify(recs), encoding: Encoding.UTF8, recursive: true })).catch(() => {})
-    return writing
+  const saveIndex = (strict = false) => {
+    const write = writing.then(() => FS.writeFile({ ...opts(INDEX), data: JSON.stringify(recs), encoding: Encoding.UTF8, recursive: true }))
+    writing = write.catch(() => {}) // later writes can recover
+    return strict ? write : writing
   }
   const scheduleIndex = () => {
     clearTimeout(writeTm)
@@ -148,7 +149,12 @@ export function fsBackend({
     async patch(h, fields) {
       if (!recs[h]) return
       recs[h] = { ...recs[h], ...fields }
-      scheduleIndex()
+      if (fields.pending === true) {
+        // Owed metadata must reach the native index before reporting success.
+        clearTimeout(writeTm)
+        writeTm = null
+        await saveIndex(true)
+      } else scheduleIndex()
     },
     async remove(h) {
       const r = recs[h]

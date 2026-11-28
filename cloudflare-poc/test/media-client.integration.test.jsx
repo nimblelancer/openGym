@@ -162,16 +162,16 @@ it('actual media-sync uploads, retries, deduplicates, downloads and refuses stal
     expect((await api('/api/data')).state.customEx.find(x=>x.id==='oversized-legacy').media.hash).toBe(largeHash)
     expect((await api('/api/media/missing',{method:'POST',body:JSON.stringify({hashes:[largeHash]})})).missing).toEqual([largeHash])
     console.log('PHASE5_OVERSIZED_PENDING_MEDIA_PRESERVED PASS')
-    // Diagnostic (not an acceptance PASS): a file previously acknowledged by a
-    // different server is not automatically marked pending when now refused.
-    // Do not delete it; the frozen client cache eviction and sign-out use pending.
+    // Phase 7 regression of the exact Phase 5 legacy ACK diagnostic.
+    // The immutable Phase 5 commit records the unsafe outcome; this candidate
+    // must now protect the same original without explicit restaging.
     await second.put(largeHash,largeBlob,{mime:'video/mp4',pending:false})
     await make(second).syncMedia({force:true,retryRejected:true})
     const legacy=await second.get(largeHash)
-    expect(legacy).toMatchObject({pending:false,rejected:true})
+    expect(legacy).toMatchObject({pending:true,rejected:true})
     expect(sha(new Uint8Array(await legacy.blob.arrayBuffer()))).toBe(largeHash)
     expect(uploads).toBe(beforeLarge)
-    console.log('PHASE5_LEGACY_ACK_PENDING_GAP RISK_REPRODUCED')
+    console.log('PHASE7_LEGACY_ACK_PENDING_SOURCE_PROTECTION PASS')
     // Read-only qualification against the real destination. A prior ACK is not
     // a receipt. Even a byte-verified independent synthetic copy cannot authorize
     // cutover while a destination file is missing or incompatible.
@@ -185,7 +185,7 @@ it('actual media-sync uploads, retries, deduplicates, downloads and refuses stal
     expect(audit.records).toEqual([{hash:largeHash,local:'verified',backup:'verified',destination:'missing',overLimit:true}])
     expect(audit.issues).toEqual(['destination-not-verified','destination-size-limit'])
     expect(audit.cutoverAuthorized).toBe(false)
-    expect((await second.get(largeHash)).pending).toBe(false)
+    expect((await second.get(largeHash)).pending).toBe(true)
     // Explicitly re-stage the verified bytes using the frozen store's public API
     // in this disposable test only. No automatic mutation during preflight.
     await second.put(largeHash,legacy.blob,{mime:legacy.mime,pending:true})
@@ -212,11 +212,13 @@ it('actual media-sync uploads, retries, deduplicates, downloads and refuses stal
     await safe.markRejected(largeHash)
     const legacyDoc=legacySnapshot.state
     _resetMediaOwed();_setMediaStore(unsafe)
-    expect(pendingRefCount(legacyDoc)).toBe(0)
+    expect(pendingRefCount(legacyDoc)).toBe(1)
     clock+=2*LOCAL_GC_GRACE_MS
     await gcFor(unsafe).localMediaGc()
-    expect(await unsafe.get(largeHash)).toBeNull()
-    console.log('PHASE5_LEGACY_ACK_CACHE_EVICTION RISK_REPRODUCED')
+    const protectedOriginal=await unsafe.get(largeHash)
+    expect(protectedOriginal).toMatchObject({pending:true,rejected:true})
+    expect(sha(new Uint8Array(await protectedOriginal.blob.arrayBuffer()))).toBe(largeHash)
+    console.log('PHASE7_LEGACY_ACK_CACHE_SOURCE_PROTECTION PASS')
     // Re-stage on the other copy, then age it past the grace period too.
     // Refresh the filler timestamp so it is still counted under pressure.
     await safe.put(largeHash,legacy.blob,{mime:legacy.mime,pending:true})

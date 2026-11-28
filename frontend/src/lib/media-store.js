@@ -84,7 +84,7 @@ export function createMediaStore(backend, {
         try { ok = await be.open() } catch { ok = false }
         if (!ok) { be = fallback(); persistent = false; await be.open() }
         else persistent = !!be.persistent
-        try { for (const r of await be.all()) index.set(r.hash, r) } catch { /* an empty index then */ }
+        try { for (const r of await be.all()) index.set(r.hash, r.rejected ? { ...r, pending: true } : r) } catch { /* an empty index then */ }
         emit()
       })()
     }
@@ -196,17 +196,29 @@ export function createMediaStore(backend, {
       await ready()
       const r = index.get(hash)
       if (!r || (!r.pending && !r.rejected)) return
-      Object.assign(r, { pending: false, rejected: false })
       await be.patch(hash, { pending: false, rejected: false })
+      Object.assign(r, { pending: false, rejected: false })
       emit()
+    },
+    // A prior ACK is not a receipt for this server. Protect a known-missing local
+    // record before any upload, refusal, metered defer or quota/backoff exit.
+    // Keep the in-memory protection even when persistence fails; retry the write
+    // on the next reconciliation, not just when the flag first changes.
+    async markOwed(hash) {
+      await ready()
+      const r = index.get(hash)
+      if (!r) return
+      r.pending = true
+      emit()
+      await be.patch(hash, { pending: true })
     },
     async markRejected(hash) {
       await ready()
       const r = index.get(hash)
-      if (!r || r.rejected) return
-      r.rejected = true
-      await be.patch(hash, { rejected: true })
+      if (!r) return
+      Object.assign(r, { pending: true, rejected: true })
       emit()
+      await be.patch(hash, { pending: true, rejected: true })
     },
     async remove(hash) {
       await ready()

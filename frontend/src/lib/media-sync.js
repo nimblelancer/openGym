@@ -18,7 +18,7 @@
  * It also keeps the local store tidy (localMediaGc) and makes the plan's custom media local ahead
  * of time (startCustomMediaPrefetch), so a workout opened without a network still shows them.
  */
-import { keptHashes, referencedFiles, uploadableFiles, MEDIA_MIMES } from './media-refs.js'
+import { keptHashes, referencedFiles, stateMediaRefs, uploadableFiles, MEDIA_MIMES } from './media-refs.js'
 import { sniffKind } from './media-sniff.js'
 import { sha256Hex } from './sha256.js'
 import { mediaStore as sharedStore } from './media-store.js'
@@ -150,9 +150,20 @@ export function createMediaSync(deps = {}) {
     try {
       for (let i = 0; i < refs.length; i += MISSING_CHUNK) {
         still()
-        const r = await d.api('/api/media/missing', { method: 'POST', headers, body: JSON.stringify({ hashes: refs.slice(i, i + MISSING_CHUNK) }) })
+        const chunk = refs.slice(i, i + MISSING_CHUNK)
+        const r = await d.api('/api/media/missing', { method: 'POST', headers, body: JSON.stringify({ hashes: chunk }) })
         still()
-        if (Array.isArray(r?.missing)) missing.push(...r.missing)
+        if (!Array.isArray(r?.missing) || r.missing.some(h => !chunk.includes(h))) throw new Error('invalid missing response')
+        missing.push(...new Set(r.missing))
+        // Protect every known-missing local record before any upload can stop
+        // the run. A failed index write blocks uploads but not protection of
+        // the other records in this response.
+        let failed = false
+        for (const h of new Set(r.missing)) {
+          still()
+          try { await d.media.markOwed(h) } catch { failed = true }
+        }
+        if (failed) throw new Error('owed index write failed')
         if (r?.usage) usage = r.usage
       }
     } catch (e) {
@@ -345,17 +356,41 @@ export function createMediaSync(deps = {}) {
       if (!mine()) return
       const st = store.getState()
       const live = keptHashes(st.S)
+      // Stashed, in-progress and device-only refs are not cache candidates,
+      // even if their hash also occurs in a remote-uploadable reference.
+      const protectedHashes = keptHashes({ active: st.S?.active })
+      const protectLocal = S => {
+        for (const h of keptHashes({ active: S?.active })) protectedHashes.add(h)
+        for (const m of stateMediaRefs(S).filter(m => m.local === true)) {
+          protectedHashes.add(m.hash)
+          if (m.poster) protectedHashes.add(m.poster.hash)
+        }
+      }
+      protectLocal(st.S)
       try {
         const raw = d.storage?.getItem(PERSISTED_KEY)
-        if (raw) for (const h of keptHashes(JSON.parse(raw))) live.add(h)
-      } catch { /* an unreadable copy keeps nothing extra */ }
+        if (raw) {
+          const saved = JSON.parse(raw)
+          for (const h of keptHashes(saved)) live.add(h)
+          protectLocal(saved)
+        }
+      } catch { return } // unreadable saved state: fail closed
       try {
-        if (typeof st.stashedMediaHashes === 'function') for (const h of await st.stashedMediaHashes()) live.add(h)
+        if (typeof st.stashedMediaHashes === 'function') for (const h of await st.stashedMediaHashes()) {
+          live.add(h)
+          protectedHashes.add(h)
+        }
       } catch { return }   // the stash could not be read: delete nothing rather than guess
       // A second guard on a phone: the mirror is read even after boot, since a copy that failed
       // to reach localStorage lives only there and in memory, and memory may already have moved on.
       try {
-        if (d.nativeLoad) { const saved = await d.nativeLoad(); if (saved) for (const h of keptHashes(saved)) live.add(h) }
+        if (d.nativeLoad) {
+          const saved = await d.nativeLoad()
+          if (saved) {
+            for (const h of keptHashes(saved)) live.add(h)
+            protectLocal(saved)
+          }
+        }
       } catch { return }   // the mirror could not be read: delete nothing rather than guess
       // A file an open editor holds as its draft is live too, however long the editor has been open.
       const held = r => typeof d.media.isHeld === 'function' && d.media.isHeld(r.hash)
@@ -363,7 +398,7 @@ export function createMediaSync(deps = {}) {
       const all = await d.media.list()
       for (const r of all) {
         if (!mine()) return
-        if (!live.has(r.hash) && !held(r) && (r.putAt || 0) < cutoff) await d.media.remove(r.hash)
+        if (!live.has(r.hash) && !r.rejected && !held(r) && (r.putAt || 0) < cutoff) await d.media.remove(r.hash)
       }
       if (!st.user || !mine()) return
       const left = (await d.media.list()).filter(r => live.has(r.hash) || held(r) || (r.putAt || 0) >= cutoff)
@@ -371,14 +406,35 @@ export function createMediaSync(deps = {}) {
       if (bytes <= LOCAL_CACHE_MAX_MB * MB) return
       const refs = referencedFiles(st.S)
       const posters = new Set(refs.filter(f => f.poster).map(f => f.hash))
-      const inState = new Set(refs.map(f => f.hash))
+      const cfg = st.config?.media
+      if (!cfg) return
+      const uploadable = new Set(uploadableFiles(st.S, { sets: !!cfg.sets, sounds: !!cfg.sounds, avatar: !!cfg.avatar }).map(f => f.hash))
+      const unchanged = () => mine() && store.getState().S === st.S && store.getState().config === st.config
       const candidates = left
-        .filter(r => !r.pending && !posters.has(r.hash) && !held(r) && (r.putAt || 0) < cutoff)
-        .sort((a, b) => (inState.has(a.hash) - inState.has(b.hash)) || ((a.shownAt || 0) - (b.shownAt || 0)))
-      for (const r of candidates) {
-        if (bytes <= LOCAL_CACHE_MAX_MB * MB || !mine()) break
-        await d.media.remove(r.hash)
-        bytes -= r.size || 0
+        .filter(r => !r.pending && !r.rejected && uploadable.has(r.hash) && !protectedHashes.has(r.hash) && !posters.has(r.hash) && !held(r) && (r.putAt || 0) < cutoff)
+        .sort((a, b) => (a.shownAt || 0) - (b.shownAt || 0))
+      // No eviction on the strength of a historical ACK: ask the current
+      // account again. This is not a backup or a durable server receipt.
+      for (let i = 0; i < candidates.length && bytes > LOCAL_CACHE_MAX_MB * MB; i += MISSING_CHUNK) {
+        if (!unchanged()) return
+        const chunk = candidates.slice(i, i + MISSING_CHUNK).map(r => r.hash)
+        let answer
+        try { answer = await d.api('/api/media/missing', { method: 'POST', headers: forAccount(tk.uid), body: JSON.stringify({ hashes: chunk }) }) } catch { return }
+        if (!unchanged() || !Array.isArray(answer?.missing) || answer.missing.some(h => !chunk.includes(h))) return
+        const missing = new Set(answer.missing)
+        for (const h of missing) {
+          if (!unchanged()) return
+          try { await d.media.markOwed(h) } catch { return }
+        }
+        for (const h of chunk) {
+          if (!unchanged() || bytes <= LOCAL_CACHE_MAX_MB * MB) return
+          if (missing.has(h)) continue
+          const rec = (await d.media.list()).find(r => r.hash === h)
+          if (!unchanged()) return
+          if (!rec || rec.pending || rec.rejected || held(rec) || (rec.putAt || 0) >= cutoff) continue
+          await d.media.remove(h)
+          bytes -= rec.size || 0
+        }
       }
     })
     return true

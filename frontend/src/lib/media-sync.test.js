@@ -332,7 +332,9 @@ describe('localMediaGc', () => {
     await media.put(hex('c'), new Blob([new Uint8Array(150 * MB)]), { mime: 'image/webp', pending: true })
     await media.put(hex('d'), new Blob([new Uint8Array(1 * MB)]), { mime: 'image/webp', pending: false })
     clock += 2 * 3600000
+    api.mockResolvedValueOnce({ missing: [] }) // fresh current-owner confirmation
     await make(appStore({ S })).localMediaGc()
+    expect(JSON.parse(api.mock.calls[0][1].body).hashes).toEqual([hex('a')])
     expect((await media.list()).map(r => r.hash).sort()).toEqual([hex('b'), hex('c'), hex('d')])
   })
 
@@ -472,4 +474,45 @@ describe('a workout\'s photos and videos', () => {
       expect(apiBlob.mock.calls.map(c => c[0])).toEqual(['/api/media/' + ph])
     } finally { stop() }
   })
+})
+
+// Phase 7: source-level preservation, not installed-client acceptance.
+it('re-marks all previously acknowledged missing originals before quota stops the first upload', async () => {
+  const be = memoryBackend()
+  const local = createMediaStore(be)
+  const hashes = [hex('a'), hex('b')]
+  for (const h of hashes) await local.put(h, new Blob(['original']), { mime: 'image/webp', pending: false })
+  apiUpload.mockRejectedValueOnce(Object.assign(new Error('quota'), { code: 'media-quota' }))
+  const S = { customEx: hashes.map(h => ({ media: refOf(h) })) }
+  await make(appStore({ S }), { media: local }).syncMedia({ force: true })
+  const reopened = createMediaStore(be)
+  expect([...await reopened.pendingHashes()].sort()).toEqual(hashes)
+  for (const h of hashes) expect(await (await reopened.get(h)).blob.text()).toBe('original')
+  expect(apiUpload).toHaveBeenCalledTimes(1)
+})
+
+it('does not turn a malformed missing response into an ACK', async () => {
+  await put(hex('a'))
+  api.mockResolvedValueOnce({ usage: {} })
+  await make(appStore({ S: { customEx: [{ media: refOf(hex('a')) }] } })).syncMedia({ force: true })
+  expect((await media.get(hex('a'))).pending).toBe(true)
+  expect(apiUpload).not.toHaveBeenCalled()
+})
+
+it('cache pressure rechecks a prior ACK, protects a missing original across reopen and keeps stash-only bytes', async () => {
+  const be = memoryBackend()
+  const local = createMediaStore(be, { now: () => clock })
+  const h = hex('a'), stash = hex('b'), filler = hex('c')
+  await local.put(h, new Blob(['original']), { mime: 'image/webp', pending: false })
+  await local.put(stash, new Blob(['stash']), { mime: 'image/webp', pending: false })
+  await be.put({ hash: filler, mime: 'image/webp', size: 400 * MB, putAt: clock, pending: true }, new Blob(['synthetic pressure']))
+  const reopened = createMediaStore(be, { now: () => clock })
+  clock += 2 * 3600000
+  const S = { customEx: [{ media: refOf(h) }, { media: refOf(filler) }] }
+  await make(appStore({ S, stashedMediaHashes: async () => new Set([stash]) }), { media: reopened }).localMediaGc()
+  const cold = createMediaStore(be)
+  expect((await cold.get(h)).pending).toBe(true)
+  expect(await (await cold.get(h)).blob.text()).toBe('original')
+  expect(await (await cold.get(stash)).blob.text()).toBe('stash')
+  expect(JSON.parse(api.mock.calls[0][1].body).hashes).toEqual([h])
 })

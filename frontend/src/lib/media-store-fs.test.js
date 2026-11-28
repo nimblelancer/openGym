@@ -1,5 +1,6 @@
 import { describe, it, expect, vi } from 'vitest'
 import { fsBackend, toBase64 } from './media-store-fs.js'
+import { createMediaStore } from './media-store.js'
 import { sha256Hex } from './sha256.js'
 import { jpeg, mp4 } from './media-samples.test-util.js'
 
@@ -114,4 +115,37 @@ describe('the phone backend', () => {
     const be = fsBackend({ load: async () => { throw new Error('not a Capacitor build') } })
     expect(await be.open()).toBe(false)
   })
+})
+
+it('Phase 7: owed transition reaches native index before return and survives reopen without background flush', async () => {
+  const fs = fakeFs()
+  const backend = fsBackend(fs.deps)
+  const store = createMediaStore(backend)
+  const bytes = jpeg(), hash = await sha256Hex(bytes)
+  await store.put(hash, new Blob([bytes]), { mime: 'image/jpeg', pending: false })
+  await backend.flush()
+  await store.markOwed(hash)
+  const cold = createMediaStore(fsBackend(fs.deps))
+  expect([...await cold.pendingHashes()]).toEqual([hash])
+  expect(await sha256Hex(new Uint8Array(await (await cold.get(hash)).blob.arrayBuffer()))).toBe(hash)
+})
+
+it('Phase 7: native index write failure does not report durable owed success; retry persists it', async () => {
+  const fs = fakeFs()
+  const mod = await fs.deps.load()
+  const originalWrite = mod.Filesystem.writeFile
+  const storeBackend = fsBackend(fs.deps)
+  const store = createMediaStore(storeBackend)
+  const bytes = jpeg(), hash = await sha256Hex(bytes)
+  await store.put(hash, new Blob([bytes]), { mime: 'image/jpeg', pending: false })
+  await storeBackend.flush()
+  mod.Filesystem.writeFile = async opts => {
+    if (opts.path.endsWith('index.json')) throw new Error('synthetic index failure')
+    return originalWrite(opts)
+  }
+  await expect(store.markOwed(hash)).rejects.toThrow('synthetic index failure')
+  expect(store.pendingNow().has(hash)).toBe(true)
+  mod.Filesystem.writeFile = originalWrite
+  await store.markOwed(hash)
+  expect([...await createMediaStore(fsBackend(fs.deps)).pendingHashes()]).toEqual([hash])
 })
