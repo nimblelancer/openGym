@@ -43,7 +43,7 @@ test('mounted production-built SPA renders a private progress photo and full-siz
     await new Promise((resolve,reject)=>{ws.addEventListener('open',resolve,{once:true});ws.addEventListener('error',reject,{once:true});});
     let seq=0;const pending=new Map(),network=[];
     ws.addEventListener('message',e=>{const m=JSON.parse(e.data);const cb=pending.get(m.id);if(cb){pending.delete(m.id);m.error?cb.reject(Error(m.error.message)):cb.resolve(m.result);}if(m.method==='Network.responseReceived'){const r=m.params.response;network.push({url:r.url,status:r.status});}});
-    const cdp=(method,params={})=>new Promise((resolve,reject)=>{const id=++seq;pending.set(id,{resolve,reject});ws.send(JSON.stringify({id,method,params}));});
+    const cdp=(method,params={},sessionId)=>new Promise((resolve,reject)=>{const id=++seq;pending.set(id,{resolve,reject});ws.send(JSON.stringify({id,method,params,...(sessionId?{sessionId}:{})}));});
     const evaluate=async expression=>{const r=await cdp('Runtime.evaluate',{expression,awaitPromise:true,returnByValue:true,userGesture:true});if(r.exceptionDetails)throw Error('Browser evaluation failed: '+(r.exceptionDetails.text||'exception'));return r.result.value;};
     const wait=async(expr,why)=>{for(let i=0;i<150;i++){try{if(await evaluate(expr))return;}catch{}await sleep(100);}throw Error(why);};
     await cdp('Page.enable');await cdp('Network.enable');await cdp('Network.setCacheDisabled',{cacheDisabled:true});
@@ -64,6 +64,32 @@ test('mounted production-built SPA renders a private progress photo and full-siz
     await cdp('WebAuthn.enable');await cdp('WebAuthn.addVirtualAuthenticator',{options:{protocol:'ctap2',transport:'internal',hasResidentKey:true,hasUserVerification:true,isUserVerified:true,automaticPresenceSimulation:true}});
     await cdp('Page.navigate',{url:runner.origin+'/'});
     await wait("document.querySelector('#root')?.textContent.includes('Create new profile')",'actual login UI did not mount');
+    // Separate real Chromium tabs and IndexedDB connections, exact adapter
+    // source (only ESM export keyword removed for CDP evaluation).
+    const adapter=(await readFile('../frontend/src/lib/media-store-idb.js','utf8')).replace('export function idbBackend','function idbBackend');
+    const tab=await cdp('Target.createTarget',{url:'about:blank'});
+    const {sessionId}=await cdp('Target.attachToTarget',{targetId:tab.targetId,flatten:true});
+    const ev2=async expression=>{
+      const r=await cdp('Runtime.evaluate',{expression,awaitPromise:true,returnByValue:true},sessionId);
+      if(r.exceptionDetails)throw Error('Second tab evaluation failed');return r.result.value;
+    };
+    try{
+      await cdp('Page.enable',{},sessionId);
+      await cdp('Page.navigate',{url:runner.origin+'/api/health'},sessionId);
+      let ready=false;
+      for(let i=0;i<100;i++){try{ready=await ev2('location.origin==='+JSON.stringify(runner.origin)+' && document.readyState==="complete"');if(ready)break;}catch{}await sleep(100);}
+      assert.ok(ready,'second tab unavailable');
+      const init='(async()=>{'+adapter+';window.__p7Backend=idbBackend();return window.__p7Backend.open()})()';
+      assert.equal(await evaluate(init),true);assert.equal(await ev2(init),true);
+      const h=createHash('sha256').update('phase7 browser race fixture').digest('hex'),q=JSON.stringify(h);
+      await evaluate('(async()=>{await __p7Backend.put({hash:'+q+',mime:"image/webp",size:27,pending:false,rejected:false,putAt:Date.now()},new Blob(["phase7 browser race fixture"]));return true})()');
+      assert.equal(await ev2('(async()=> (await __p7Backend.all()).find(r=>r.hash==='+q+').pending)()'),false);
+      await evaluate('(async()=>{await __p7Backend.patch('+q+',{pending:true});return true})()');
+      assert.equal(await ev2('(async()=> (await __p7Backend.removeIf('+q+',r=>!r.pending&&!r.rejected))===null)()'),true);
+      assert.equal(await evaluate('(async()=> (await __p7Backend.getBlob('+q+')).text())()'),'phase7 browser race fixture');
+      await evaluate('(async()=>{await __p7Backend.remove('+q+');return true})()');
+      console.log('PHASE7_REAL_BROWSER_IDB_STALE_EVICTION PASS');
+    }finally{await cdp('Target.closeTarget',{targetId:tab.targetId});}
     // Synthetic offline FFmpeg lavfi fixtures, decoded in full with FFmpeg and
     // checked with ffprobe before embedding. CI need not install an encoder.
     // Video: color=c=blue:s=48x32 (MOV 64x32):r=5:d=1, libx264 baseline,

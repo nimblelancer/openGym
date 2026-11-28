@@ -228,3 +228,32 @@ it('Phase 7: transient native orphan read error never deletes the original', asy
   expect([...await cold.pendingHashes()]).toEqual([hash])
   expect(await sha256Hex(new Uint8Array(await (await cold.get(hash)).blob.arrayBuffer()))).toBe(hash)
 })
+
+it('Phase 7: concurrent ACK marker cleanup cannot erase newer owed observation', async () => {
+  const fs = fakeFs(), mod = await fs.deps.load()
+  const backend = fsBackend(fs.deps), store = createMediaStore(backend)
+  const bytes = jpeg(), hash = await sha256Hex(bytes)
+  await store.put(hash, new Blob([bytes]), { mime: 'image/jpeg', pending: false })
+  await backend.flush()
+  await store.markOwed(hash)
+  const marker = 'opengym-media/' + hash + '.owed'
+  const originalDelete = mod.Filesystem.deleteFile
+  let entered, release
+  const deleting = new Promise(resolve => { entered = resolve })
+  const resume = new Promise(resolve => { release = resolve })
+  mod.Filesystem.deleteFile = async opts => {
+    if (opts.path === marker) { entered(); await resume }
+    return originalDelete(opts)
+  }
+  const ack = store.markSynced(hash)
+  await deleting
+  const owed = store.markOwed(hash)
+  await Promise.resolve()
+  release()
+  await Promise.all([ack, owed])
+  expect(store.pendingNow().has(hash)).toBe(true)
+  expect(fs.files.has(marker)).toBe(true)
+  const cold = createMediaStore(fsBackend(fs.deps))
+  expect([...await cold.pendingHashes()]).toEqual([hash])
+  expect(await sha256Hex(new Uint8Array(await (await cold.get(hash)).blob.arrayBuffer()))).toBe(hash)
+})

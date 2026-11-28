@@ -52,6 +52,7 @@ export function fsBackend({
   let recs = {}
   let writeTm = null
   let writing = Promise.resolve()
+  let patching = Promise.resolve()
   const uris = new Map()
 
   const opts = path => ({ path, directory: Directory.Library })
@@ -76,7 +77,7 @@ export function fsBackend({
     clearTimeout(writeTm)
     writeTm = setTimeout(() => { writeTm = null; saveIndex() }, debounceMs)
   }
-  const flush = () => { if (writeTm) { clearTimeout(writeTm); writeTm = null; return saveIndex() } return writing }
+  const flush = async () => { await patching; if (writeTm) { clearTimeout(writeTm); writeTm = null; return saveIndex() } return writing }
 
   return {
     name: 'fs',
@@ -159,7 +160,10 @@ export function fsBackend({
       recs[rec.hash] = { ...rec }
       scheduleIndex()
     },
-    async patch(h, fields) {
+    patch(h, fields) {
+      // Serialize marker/index/marker-removal sequences in this adapter.
+      // A newer owed write must not be erased by an older ACK cleanup.
+      const op = patching.then(async () => {
       if (!recs[h]) return
       recs[h] = { ...recs[h], ...fields }
       if (typeof fields.pending === 'boolean') {
@@ -185,6 +189,9 @@ export function fsBackend({
           try { await FS.deleteFile(opts(owedName(h))) } catch {}
         }
       } else scheduleIndex()
+      })
+      patching = op.catch(() => {})
+      return op
     },
     async remove(h) {
       const r = recs[h]

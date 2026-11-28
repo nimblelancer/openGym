@@ -260,7 +260,16 @@ test('actual local Worker: SPA, private R2, authenticated media contract and res
     assert.equal((await put(image,hash,{'x-opengym-account':'not-this-owner'})).status,409);
     assert.equal((await put(image,other)).status,400);
     assert.equal((await put(Buffer.from('<svg/>'))).status,415);
-    assert.equal((await put(Buffer.alloc(2*MB+1))).status,413);
+    const oversize=Buffer.alloc(2*MB+1);
+    const refused=await put(oversize);assert.equal(refused.status,413);assert.equal((await refused.json()).code,'media-too-large');
+    assert.equal((await raw(path,'PUT',oversize,{'content-type':'image/png'})).status,401);
+    assert.equal((await put(oversize,hash,{origin:'https://hostile.invalid'})).status,403);
+    assert.equal((await put(oversize,hash,{'x-opengym-account':'not-this-owner'})).status,409);
+    // An external header must not manufacture the bodyless rejection path.
+    const forged=await put(image,other,{'x-opengym-internal-rejected-length':'8388609'});
+    assert.equal(forged.status,400);assert.equal((await forged.json()).code,'hash-mismatch');
+    assert.equal((await data(await post('/api/media/missing',{hashes:[hash,other]},auth()))).missing.length,2);
+    console.log('PHASE7_DECLARED_REJECTION_AUTH_FENCE PASS');
     assert.equal((await post('/api/media/missing',{hashes:['bad']},auth())).status,400);
     assert.equal((await data(await post('/api/media/missing',{hashes:[hash,other,hash]},auth()))).missing.length,2);
     // Hold a real loopback HTTP upload in flight, without exposing a fault endpoint.
@@ -278,6 +287,7 @@ test('actual local Worker: SPA, private R2, authenticated media contract and res
       }
       assert.ok(admitted,'partial HTTP upload never acquired media admission');
       const concurrent=await put();assert.equal(concurrent.status,429);assert.equal((await concurrent.json()).code,'busy');
+      const oversizedBusy=await put(oversize);assert.equal(oversizedBusy.status,429);assert.equal((await oversizedBusy.json()).code,'busy');
       const stateBusy=await raw('/api/data','PUT',JSON.stringify({state:{workouts:[],routines:[]},baseRev:0}),{'content-type':'application/json',...auth()});
       assert.equal(stateBusy.status,503);assert.equal((await stateBusy.json()).code,'busy');
       const sweepBusy=await post('/api/media/sweep',{},auth());assert.equal(sweepBusy.status,429);assert.equal((await sweepBusy.json()).code,'busy');

@@ -115,3 +115,12 @@ it('Phase 7: negotiated migration reset hold stops actual store mutation and ser
     expect(api).not.toHaveBeenCalled()
   } finally { useStore.setState({ config: priorConfig }) }
 })
+
+it('Phase 7: unreadable stash inventory is not an empty preservation set', async () => {
+  localStorage.setItem("gym_stash", '{broken')
+  await expect(useStore.getState().stashedMediaHashes()).rejects.toThrow()
+  localStorage.setItem("gym_stash", '[]')
+  await expect(useStore.getState().stashedMediaHashes()).rejects.toThrow()
+  localStorage.removeItem("gym_stash")
+  expect(await useStore.getState().stashedMediaHashes()).toEqual(new Set())
+})

@@ -70,6 +70,7 @@ export function createMediaStore(backend, {
   let persistent = !!backend.persistent
   const index = new Map()
   const listeners = new Set()
+  const owedEpoch = new Map() // same-instance ACK must not clear a newer owed observation
   // hash → { url, refs, timer, file }  (file: a phone's file URL, which is never revoked)
   const urls = new Map()
   const making = new Map()   // hash → the url() in progress, so two callers make one
@@ -196,7 +197,9 @@ export function createMediaStore(backend, {
       await ready()
       const r = index.get(hash)
       if (!r || (!r.pending && !r.rejected)) return
+      const at = owedEpoch.get(hash)
       await be.patch(hash, { pending: false, rejected: false })
+      if (index.get(hash) !== r || owedEpoch.get(hash) !== at) return
       Object.assign(r, { pending: false, rejected: false })
       emit()
     },
@@ -208,6 +211,7 @@ export function createMediaStore(backend, {
       await ready()
       const r = index.get(hash)
       if (!r) return
+      owedEpoch.set(hash, (owedEpoch.get(hash) || 0) + 1)
       r.pending = true
       emit()
       await be.patch(hash, { pending: true })
@@ -216,6 +220,7 @@ export function createMediaStore(backend, {
       await ready()
       const r = index.get(hash)
       if (!r) return
+      owedEpoch.set(hash, (owedEpoch.get(hash) || 0) + 1)
       Object.assign(r, { pending: true, rejected: true })
       emit()
       await be.patch(hash, { pending: true, rejected: true })

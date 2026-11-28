@@ -10,7 +10,7 @@ import { excusedOn,nudgeFor } from '../../api/nudge.js';
 import { isMisconfigured } from '../../api/verify-error.js';
 import { CORE } from './auth/routes.js';
 import { Presence } from './auth/presence.js';
-import { MEDIA_CONFIG,mediaRoute,handleMedia,readMediaJson } from './media.js';
+import { MEDIA_CONFIG,mediaRoute,handleMedia,readMediaJson,declaredUploadTooLarge } from './media.js';
 import { MediaLifecycle } from './media-lifecycle.js';
 const result=(status,body,token)=>({status,body,token});
 const ok=(body={ok:true},token)=>result(200,body,token);
@@ -24,10 +24,29 @@ const limit=()=>err(409,'a profile can have at most '+MAX_PASSKEYS+' passkeys','
 const invalidPair=()=>err(400,'invalid or expired code','pair-invalid');
 const publicUser=u=>({id:u.id,name:u.name,admin:true,owner:true});
 const text=x=>typeof x==='string'?x:'';
+// Private Worker-to-DO metadata, never accepted from an HTTP caller.
+const REJECTED_LENGTH='x-opengym-internal-rejected-length';
 export default {async fetch(req,env){
   const u=new URL(req.url);
   if(!['localhost','127.0.0.1'].includes(u.hostname))return Response.json({error:'local only'},{status:403,headers:{'Cache-Control':'no-store'}});
-  try{return await env.AUTH.get(env.AUTH.idFromName('phase3-local-owner')).fetch(req);}
+  try{
+    let forwarded=req;
+    const oversized=declaredUploadTooLarge(req);
+    if(oversized||req.headers.has(REJECTED_LENGTH)){
+      const h=new Headers(req.headers);
+      h.delete(REJECTED_LENGTH);
+      if(oversized){
+        // Synthetic bridge controls reproduced the failure only when an
+        // unread incoming body was forwarded across the DO boundary.
+        // Preserve auth/origin/owner/admission inside the DO, but do not
+        // forward a body the existing size guard will necessarily reject.
+        h.set(REJECTED_LENGTH,h.get('content-length'));
+        h.delete('content-length');h.delete('transfer-encoding');
+        forwarded=new Request(req.url,{method:req.method,headers:h});
+      }else forwarded=new Request(req,{headers:h});
+    }
+    return await env.AUTH.get(env.AUTH.idFromName('phase3-local-owner')).fetch(forwarded);
+  }
   catch{return Response.json(req.method==='GET'&&u.pathname==='/api/health'?{ok:false,writable:false}:{error:'service unavailable'},{status:503,headers:{'Cache-Control':'no-store'}});}
 }};
 export class AuthCoordinator extends DurableObject{
@@ -79,7 +98,7 @@ export class AuthCoordinator extends DurableObject{
             const outcome=await this.lifecycle.sweep(s.uid,live);
             response=Response.json(outcome.body,{status:outcome.status});
           }else{
-            response=await handleMedia(req,s.uid,this.media,live);
+            response=await handleMedia(req,s.uid,this.media,live,{rejectedLength:req.headers.get(REJECTED_LENGTH)});
             if(req.method==='PUT'&&response.ok)this.a.tx(()=>this.lifecycle.touch(s.uid,u.pathname.split('/').at(-1)));
           }
           const h=new Headers(response.headers);

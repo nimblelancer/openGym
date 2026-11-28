@@ -92,12 +92,21 @@ const REMOTE_FILE = 'opengym-remote.json'
 
 // Small JSON files in the app's private data directory, for device facts that must not ride
 // in S (which syncs and exports): the pairing, and how the Coach runs on this phone.
-export async function readJsonFile(name) {
+export async function readJsonFile(name, { strict = false } = {}) {
   try {
     const { Filesystem, Directory, Encoding } = await import('@capacitor/filesystem')
+    if (strict) {
+      // Absence is confirmed by directory inventory, not by swallowing an IO
+      // or parsing failure. Only preservation callers opt in.
+      const list = await Filesystem.readdir({ path: '', directory: Directory.Data })
+      if (!Array.isArray(list.files)) throw new Error('invalid native directory inventory')
+      if (!list.files.some(f => (typeof f === 'string' ? f : f?.name) === name)) return null
+    }
     const r = await Filesystem.readFile({ path: name, directory: Directory.Data, encoding: Encoding.UTF8 })
-    return JSON.parse(r.data)
-  } catch (e) { return null }
+    const parsed = JSON.parse(r.data)
+    if (strict && parsed === null) throw new Error('invalid native JSON')
+    return parsed
+  } catch (e) { if (strict) throw e; return null }
 }
 export async function writeJsonFile(name, data) {
   try {

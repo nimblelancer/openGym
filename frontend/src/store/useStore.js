@@ -1150,7 +1150,7 @@ export const useStore = create((set, get) => {
     // left alone, since nothing can have been put into it.
     if (hadMedia || mediaStoreInUse()) {
       const since = Date.now()
-      Promise.resolve(wiped).then(() => readStashes())
+      Promise.resolve(wiped).then(() => readStashes({ strict: true }))
         .then(all => mediaStore.retainOnly(new Set(Object.values(all).flatMap(e => [...keptHashes(e?.state)])), { keepPutAfter: since }))
         .catch(() => {})
     }
@@ -1162,11 +1162,16 @@ export const useStore = create((set, get) => {
      address — in localStorage and, on a phone, in a file beside the state mirror, since the
      sign-out wipes the rest. */
   const stashKey = (server, uid) => (server || '') + '|' + uid
-  const readStashes = async () => {
+  const readStashes = async ({ strict = false } = {}) => {
     let all = {}
-    try { all = JSON.parse(localStorage.getItem(STASH_KEY)) || {} } catch { /* none */ }
+    try {
+      const raw = localStorage.getItem(STASH_KEY)
+      all = raw === null ? {} : JSON.parse(raw)
+      if (!all || typeof all !== 'object' || Array.isArray(all)) throw new Error('invalid stash inventory')
+    } catch (e) { if (strict) throw e; all = {} }
     if (MOBILE) {
-      const f = await readJsonFile(STASH_FILE)
+      const f = await readJsonFile(STASH_FILE, { strict })
+      if (strict && f !== null && (!f || typeof f !== 'object' || Array.isArray(f))) throw new Error('invalid native stash inventory')
       if (f && typeof f === 'object') {
         // Either medium may have refused the last write. Do not let an older native
         // entry hide the newer localStorage copy (or the reverse).
@@ -2088,7 +2093,7 @@ export const useStore = create((set, get) => {
     // Every photo and video file the stashes refer to: they are kept on this device for as long
     // as the stash is (lib/media-sync.js localMediaGc, Reset everything).
     async stashedMediaHashes() {
-      const all = await readStashes()
+      const all = await readStashes({ strict: true })
       return new Set(Object.values(all).flatMap(e => [...keptHashes(e?.state)]))
     },
 

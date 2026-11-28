@@ -12,6 +12,14 @@ const json=(b,status=200)=>Response.json(b,{status});
 const missing=()=>error(404,'media-missing','no such file');
 const denied=()=>error(401,'not-signed-in','not signed in');
 const cap=k=>k==='image'||k==='audio'?2*MB:k==='gif'||k==='video'?LIMIT:0;
+const uploadCap=req=>cap(MEDIA_MIMES[(req.headers.get('content-type')||'').split(';')[0].trim().toLowerCase()]?.kind);
+// Only requests already guaranteed to fail the existing declared-length cap
+// may have their body omitted on the internal DO hop. No body is consumed.
+export function declaredUploadTooLarge(req,length=req.headers.get('content-length')){
+  const max=uploadCap(req);
+  return req.method==='PUT'&&/^\/api\/media\/[a-f0-9]{64}$/.test(new URL(req.url).pathname)&&
+    max>0&&typeof length==='string'&&/^\d+$/.test(length)&&Number(length)>max;
+}
 const prefix=uid=>'private/v1/'+uid+'/';
 const path=(uid,h)=>prefix(uid)+h;
 export const mediaRoute=(method,p)=>method==='POST'&&['/api/media/missing','/api/media/sweep'].includes(p)||['GET','PUT','HEAD'].includes(method)&&/^\/api\/media\/[a-f0-9]{64}$/.test(p);
@@ -92,7 +100,7 @@ export function parseRange(raw,size){
   return Number.isSafeInteger(a)&&Number.isSafeInteger(b)&&a>=0&&a<=b&&a<size?{offset:a,length:b-a+1}:false;
 }
 function validObject(o,h){return !!o&&o.size>0&&o.size<=cap(MEDIA_MIMES[o.httpMetadata?.contentType]?.kind)&&o.customMetadata?.sha256===h;}
-export async function handleMedia(req,uid,bucket,live){
+export async function handleMedia(req,uid,bucket,live,{rejectedLength=null}={}){
   const p=new URL(req.url).pathname,hash=p.split('/').at(-1),want=req.headers.get('x-opengym-account');
   if(!live())return denied();
   if(want&&want!==uid)return error(409,'account-mismatch','signed in as another account now');
@@ -108,8 +116,14 @@ export async function handleMedia(req,uid,bucket,live){
   const key=path(uid,hash);
   if(req.method==='PUT'){
     const declared=(req.headers.get('content-type')||'').split(';')[0].trim().toLowerCase();
-    const max=cap(MEDIA_MIMES[declared]?.kind);
+    const max=uploadCap(req);
     if(!max)return error(415,'media-type','that file type is not accepted');
+    // This internal value is set only by the ingress Worker. Revalidate
+    // the original declaration; it can never enable an upload or a write.
+    if(rejectedLength!==null){
+      if(!declaredUploadTooLarge(req,rejectedLength))return error(400,'bad-request','invalid rejected upload declaration');
+      return error(413,'media-too-large','that file is too large',{maxMB:max/MB});
+    }
     const bytes=await boundedBytes(req,max);
     if(!bytes)return error(413,'media-too-large','that file is too large',{maxMB:max/MB});
     if(createHash('sha256').update(bytes).digest('hex')!==hash)return error(400,'hash-mismatch','the file does not match its name');
