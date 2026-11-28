@@ -1162,6 +1162,17 @@ export const useStore = create((set, get) => {
      address — in localStorage and, on a phone, in a file beside the state mirror, since the
      sign-out wipes the rest. */
   const stashKey = (server, uid) => (server || '') + '|' + uid
+  // Cooperating asynchronous stash publishers serialize read/modify/write,
+  // including across browser tabs with Web Locks. This is not a distributed
+  // native filesystem transaction; legacy synchronous keepForPrevious still
+  // requires separate qualification.
+  let stashQueue = Promise.resolve()
+  const withStashLock = fn => {
+    const op = stashQueue.then(() => typeof globalThis.navigator?.locks?.request === 'function'
+      ? globalThis.navigator.locks.request('opengym-stash-publication', fn) : fn())
+    stashQueue = op.catch(() => {})
+    return op
+  }
   const readStashes = async ({ strict = false } = {}) => {
     let all = {}
     try {
@@ -1285,7 +1296,7 @@ export const useStore = create((set, get) => {
   }
   // Prepare before remote.js installs new credentials. A refused stash leaves
   // the current account, pairing and state untouched.
-  const prepareMobileSwitch = async (user, base) => {
+  const prepareMobileSwitch = (user, base) => withStashLock(async () => {
     const owner = readOwner()
     if (!owner || (owner === user.id && (!serverBase() || serverBase() === base))) return
     syncFromSaved()
@@ -1306,48 +1317,58 @@ export const useStore = create((set, get) => {
     // Invalidate in-flight responses even when setUser sees an unchanged user ID.
     get().setUser(user, { adopt: true, preparedSwitch: owner !== user.id, pairingPrepared: true })
     newSession()
-  }
+  })
   // What a sign-out or disconnect answers when something is owed: how many changes, and how many
   // photos or videos, when there are any.
   const owedResult = (left, extra = {}) => ({ owed: true, count: left.count, ...(left.media ? { media: left.media } : {}), ...extra })
-  const stashOwed = async () => {
+  const stashOwed = () => {
+    const tok = currentSession(), owner = readOwner()
+    return withStashLock(async () => {
+    if (!isCurrent(tok) || readOwner() !== owner) return false
     const user = get().user
     if (!user) return true
-    const tok = currentSession()
     let all
     try { all = await readStashes({ strict: true }) } catch { return false }
-    if (!isCurrent(tok)) return false
+    if (!isCurrent(tok) || readOwner() !== owner) return false
+    const before = get().S
     const server = serverBase()
     const key = stashKey(server, user.id)
     const prev = all[key]?.state
-    const state = prev ? mergeStates(get().S, prev) : clone(get().S)
+    const state = prev ? mergeStates(before, prev) : clone(before)
     // Each running workout in the kept copy's unit (carryActive), never a kg session under lb.
     state.active = carryActive(get().S, state) || carryActive(prev, state) || null
     // Kept while a sign-in's question was open: a copy that was never this account's, added back
     // like an answered "Add them" (applyStash), the account's settings and history first.
     const adopt = adoptHold || !!all[key]?.adopt
     all[key] = { server: server || null, uid: user.id, name: user.name || '', at: stashAt(all[key]), state, ...(adopt ? { adopt: true } : {}) }
-    return writeStashes(all)
+    const saved = await writeStashes(all)
+    return saved && isCurrent(tok) && readOwner() === owner && get().S === before
+    })
   }
   // A workout running here is never on the server (a push leaves `active` out), so a sign-out
   // with nothing owed used to wipe it. It is kept aside the way owed changes are, on its own:
   // the rest of the copy is the server's already, and a shared device keeps no more of the
   // account than it has to. It comes back on the next sign-in here as this account (applyStash).
-  const stashActive = async () => {
+  const stashActive = () => {
+    const tok = currentSession(), owner = readOwner()
+    return withStashLock(async () => {
+    if (!isCurrent(tok) || readOwner() !== owner) return false
     const user = get().user
     const a = get().S.active
     if (!user || !a) return true
-    const tok = currentSession()
     let all
     try { all = await readStashes({ strict: true }) } catch { return false }
-    if (!isCurrent(tok) || get().S.active !== a) return false
+    if (!isCurrent(tok) || readOwner() !== owner || get().S.active !== a) return false
+    const before = get().S
     const server = serverBase()
     const key = stashKey(server, user.id)
     const prev = all[key]?.state
     const state = prev ? clone(prev) : Object.assign(clone(DEF), { _ts: 0, unit: get().S.unit || 'kg' })
     state.active = clone(carryActive(get().S, state))
     all[key] = { server: server || null, uid: user.id, name: user.name || '', at: stashAt(all[key]), state }
-    return writeStashes(all)
+    const saved = await writeStashes(all)
+    return saved && isCurrent(tok) && readOwner() === owner && get().S === before
+    })
   }
   // A sign-out ends the rest and the hold running on this device: the countdown must not go on
   // over the sign-in screen, or ring for an account that has left. Before the logout request,
@@ -1397,9 +1418,12 @@ export const useStore = create((set, get) => {
           !(mirrorOwner?.owner === user.id && mirrorOwner.ts === mirror?._ts && sameStash(mirror?.active, merged.active))) return
     }
     // Read once more, so a stash written meanwhile is not written over with the older read.
-    const now = await readStashes()
-    if (!isCurrent(tok)) return
-    await clearStashes(now, keys.filter(k => sameStash(now[k], all[k])))
+    await withStashLock(async () => {
+      let now
+      try { now = await readStashes({ strict: true }) } catch { return }
+      if (!isCurrent(tok)) return
+      await clearStashes(now, keys.filter(k => sameStash(now[k], all[k])))
+    })
   }
 
   // "Keep profile as is": what this device held before the sign-in leaves the screen, but not the
@@ -1407,12 +1431,14 @@ export const useStore = create((set, get) => {
   // be saved as a backup file from Settings, in case the answer was the wrong one.
   const keepAside = async (S, name, keepUid) => {
     if (!hasData(S) && !S.active) return
-    const state = clone(S)
-    const all = await readStashes()
-    const uid = keepUid || 'device-' + Date.now().toString(36)
-    const key = stashKey(serverBase(), uid)
-    all[key] = { server: serverBase() || null, uid, name, at: stashAt(all[key]), state }
-    if (!await writeStashes(all)) throw new Error(t('This device is out of storage: the change is not saved on it. Signed in, it still goes to the server.'))
+    const state = clone(S), server = serverBase()
+    await withStashLock(async () => {
+      const all = await readStashes({ strict: true })
+      const uid = keepUid || 'device-' + Date.now().toString(36)
+      const key = stashKey(server, uid)
+      all[key] = { server: server || null, uid, name, at: stashAt(all[key]), state }
+      if (!await writeStashes(all)) throw new Error(t('This device is out of storage: the change is not saved on it. Signed in, it still goes to the server.'))
+    })
   }
   const keepDeviceCopy = () => keepAside(get().S, t('This device, before signing in'))
 

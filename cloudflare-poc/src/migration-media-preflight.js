@@ -9,20 +9,36 @@ const validHash=h=>typeof h==='string'&&HASH_RE.test(h);
 const limit=m=>{const k=MEDIA_MIMES[m]?.kind;return (k==='video'?MEDIA_CONFIG.videoMB:k==='gif'?MEDIA_CONFIG.gifMB:k==='audio'?MEDIA_CONFIG.audioMB:k==='image'?MEDIA_CONFIG.imageMB:0)*MB;};
 // A read adapter returns a Blob or null for confirmed absence. Unknown or
 // unreadable is an error, not absence. Verify bytes, not prior pending flags.
-async function verify(read,h,expected){
+// Deadline applies to adapter invocation and the complete byte stream.
+// A timed-out audit aborts rather than proceeding to more adapters.
+const timeoutError=()=>Object.assign(Error('migration audit deadline exceeded'),{code:'audit-timeout'});
+async function bounded(fn,ms){
+  if(ms<=0)throw timeoutError();
+  const ctl=new AbortController();let timer;
+  try{return await Promise.race([Promise.resolve().then(()=>fn(ctl.signal)),new Promise((_,reject)=>{timer=setTimeout(()=>{reject(timeoutError());ctl.abort();},ms);})]);}
+  finally{clearTimeout(timer);}
+}
+async function verify(read,h,expected,signal){
   try{
-    const blob=await read(h);
+    const blob=await read(h,{signal});
+    signal.throwIfAborted();
     if(blob===null)return {status:'missing'};
     if(!blob||!Number.isSafeInteger(blob.size)||blob.size<1||blob.size>MAX_BYTES||typeof blob.stream!=='function')return {status:'invalid'};
     if(expected&&(expected.size!==blob.size||expected.mime!==blob.type))return {status:'invalid'};
     const reader=blob.stream().getReader(),hash=createHash('sha256');let n=0;
-    try{for(;;){const {done,value}=await reader.read();if(done)break;n+=value.byteLength;if(n>blob.size||n>MAX_BYTES){await reader.cancel();return {status:'invalid'};}hash.update(value);}}
-    finally{reader.releaseLock();}
+    const cancel=()=>{try{reader.cancel().catch(()=>{});}catch{}};
+    signal.addEventListener('abort',cancel,{once:true});
+    try{for(;;){signal.throwIfAborted();const {done,value}=await reader.read();signal.throwIfAborted();if(done)break;n+=value.byteLength;if(n>blob.size||n>MAX_BYTES){cancel();return {status:'invalid'};}hash.update(value);}}
+    finally{signal.removeEventListener('abort',cancel);reader.releaseLock();}
     return n===blob.size&&hash.digest('hex')===h?{status:'verified',size:n,mime:blob.type}:{status:'invalid'};
   }catch{return {status:'unreadable'};}
 }
-export async function auditMigrationMedia({owner,snapshots,readLocal,readBackup,readDestination,isCurrent,retainedInventory=null}){
+export async function auditMigrationMedia({owner,snapshots,readLocal,readBackup,readDestination,isCurrent,retainedInventory=null,destinationInventory=null,adapterMs=15000,totalMs=180000}){
   if(typeof owner!=='string'||!owner||!Array.isArray(snapshots)||!snapshots.length||snapshots.length>32||![readLocal,readBackup,readDestination,isCurrent].every(f=>typeof f==='function'))throw Error('invalid migration preflight');
+  if(!Number.isSafeInteger(adapterMs)||adapterMs<1||adapterMs>30000||!Number.isSafeInteger(totalMs)||totalMs<1||totalMs>300000)throw Error('invalid audit deadline');
+  const deadline=performance.now()+totalMs;
+  const step=fn=>bounded(fn,Math.min(adapterMs,Math.max(0,deadline-performance.now())));
+  const fence=async()=>{if(!await step(signal=>isCurrent(owner,{signal})))throw Error('migration snapshot or owner changed');};
   const refs=new Map(),issues=new Set(),required=new Set(),uploadable=new Set();
   const add=m=>{
     if(!m||typeof m!=='object'||!validHash(m.hash)){issues.add('invalid-reference');return;}
@@ -44,11 +60,12 @@ export async function auditMigrationMedia({owner,snapshots,readLocal,readBackup,
   // Explicit owner-bound retained objects must be verified too, even when
   // no current state references them. This is a supplied frozen inventory,
   // not an enumeration of unknown devices or a proof of completeness.
-  if(retainedInventory!==null){
-    if(retainedInventory?.owner!==owner||!Array.isArray(retainedInventory.rows)||retainedInventory.rows.length>MAX_HASHES)throw Error('invalid or foreign retained inventory');
+  for(const [kind,inventory] of [['retained',retainedInventory],['destination',destinationInventory]]){
+    if(inventory===null)continue;
+    if(inventory?.owner!==owner||!Array.isArray(inventory.rows)||inventory.rows.length>MAX_HASHES)throw Error('invalid or foreign '+kind+' inventory');
     const seen=new Set();
-    for(const row of retainedInventory.rows){
-      if(!validHash(row?.hash)||seen.has(row.hash))throw Error('invalid retained inventory row');
+    for(const row of inventory.rows){
+      if(!validHash(row?.hash)||seen.has(row.hash))throw Error('invalid '+kind+' inventory row');
       seen.add(row.hash);add(row);uploadable.add(row.hash);
     }
   }
@@ -61,15 +78,14 @@ export async function auditMigrationMedia({owner,snapshots,readLocal,readBackup,
   // Local-only and active references are not silently uploaded or dropped. A
   // destination blob alone is not proof of an installed-device local restore.
   if([...required].some(h=>!uploadable.has(h)))issues.add('device-local-restore-required');
-  if(!await isCurrent(owner))throw Error('migration snapshot or owner changed');
+  await fence();
   const records=[];
   for(const h of [...required].sort()){
     const expected=refs.get(h);
     if(!expected)issues.add('missing-reference-metadata');
-    const fence=async()=>{if(!await isCurrent(owner))throw Error('migration snapshot or owner changed');};
-    const local=await verify(readLocal,h,expected);await fence();
-    const backup=await verify(readBackup,h,expected);await fence();
-    const destination=await verify(readDestination,h,expected);await fence();
+    const local=await step(signal=>verify(readLocal,h,expected,signal));await fence();
+    const backup=await step(signal=>verify(readBackup,h,expected,signal));await fence();
+    const destination=await step(signal=>verify(readDestination,h,expected,signal));await fence();
     if(destination.status!=='verified')issues.add('destination-not-verified');
     if(backup.status!=='verified')issues.add('backup-not-verified');
     if(expected&&expected.size>limit(expected.mime))issues.add('destination-size-limit');

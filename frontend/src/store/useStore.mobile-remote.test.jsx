@@ -34,6 +34,7 @@ vi.mock('@capacitor/filesystem', () => ({
       return { data: h.files.get(k) }
     },
     writeFile: async ({ path, directory, data }) => {
+      if (path === 'opengym-stash.json' && h.holdStashWrite) await h.holdStashWrite()
       if (h.refuse.has(path)) throw new Error('No space left on device')
       h.files.set(directory + '/' + path, data)
       return { uri: 'file://' + path }
@@ -813,4 +814,31 @@ describe('the first-start permission steps (views/PermissionSteps.jsx)', () => {
     expect(useStore.getState().needsMobileOnboarding).toBe(false)
     expect(useStore.getState().permSteps).toBe(true)
   })
+})
+
+it('Phase 7: edit during stash publication prevents logout and preserves the newer live copy', async () => {
+  pairedPhone()
+  h.server = refusing
+  const store = await freshStore()
+  await store.getState().boot()
+  store.getState().update(s => { s.workouts.push(workout('before-stash', '2026-09-15')) })
+  await store.getState().pushState()
+  let entered, release
+  const writing = new Promise(resolve => { entered = resolve })
+  const resume = new Promise(resolve => { release = resolve })
+  h.holdStashWrite = async () => { entered(); await resume }
+  try {
+    const disconnect = store.getState().disconnectServer({ force: true })
+    await writing
+    store.getState().update(s => { s.workouts.push(workout('during-stash', '2026-09-16')) }, false)
+    release()
+    expect(await disconnect).toMatchObject({ owed: true, stashed: false })
+    expect(store.getState().user.id).toBe(USER.id)
+    expect(readFile('opengym-remote.json').mode).toBe('remote')
+    expect(ids(store.getState().S.workouts)).toContain('during-stash')
+    expect(h.calls.some(c => c.url.endsWith('/api/logout'))).toBe(false)
+    h.holdStashWrite = null
+    expect(await store.getState().disconnectServer({ force: true })).toMatchObject({ stashed: true })
+    expect(ids(readFile('opengym-stash.json')[BASE + '|u1'].state.workouts)).toContain('during-stash')
+  } finally { release(); h.holdStashWrite = null }
 })

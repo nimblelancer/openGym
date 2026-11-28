@@ -438,11 +438,35 @@ test('read-only migration audit verifies known bytes and fails closed on missing
   let fenceChecks=0,backupCalls=0,destinationCalls=0;
   await assert.rejects(auditMigrationMedia({...args,isCurrent:async()=>++fenceChecks===1,readBackup:async()=>{backupCalls++;return blob;},readDestination:async()=>{destinationCalls++;return blob;}}),/snapshot or owner changed/);
   assert.equal(backupCalls,0);assert.equal(destinationCalls,0);
+  // Existing destination-only objects also consume capacity and need a
+  // verified independent backup; do not double-count a shared hash.
+  const occupied=await auditMigrationMedia({...retainedArgs,retainedInventory:null,destinationInventory:{owner,rows:[retained]}});
+  assert.deepEqual(occupied.minimumDestination,{bytes:image.length+retained.size,count:2});
+  assert.equal(occupied.knownMediaVerified,true);assert.equal(occupied.cutoverAuthorized,false);
+  const overlap=await auditMigrationMedia({...retainedArgs,destinationInventory:{owner,rows:[retained]}});
+  assert.deepEqual(overlap.minimumDestination,occupied.minimumDestination);
+  await assert.rejects(auditMigrationMedia({...retainedArgs,destinationInventory:{owner:'foreign',rows:[retained]}}),/foreign destination/);
   console.log('PHASE7_RETAINED_INVENTORY_FENCE PASS');
   console.log('PHASE5_PREFLIGHT_CAPACITY_LOCAL_ONLY_GATES PASS');
   console.log('PHASE5_MIGRATION_PREFLIGHT_INTEGRITY PASS');
 });
 
+
+test('Phase 7: migration audit deadlines abort stalled adapters and streams without calling later readers',async()=>{
+  const owner='abcdefghijklmnop',blob=new Blob([image],{type:'image/png'});
+  const snapshots=[{owner,state:{customEx:[{media:{hash,mime:'image/png',kind:'image',size:image.length}}]}}];
+  let later=0,aborted=false;
+  const args={owner,snapshots,readLocal:async(h,{signal})=>new Promise(()=>{signal.addEventListener('abort',()=>{aborted=true;},{once:true});}),readBackup:async()=>{later++;return blob;},readDestination:async()=>{later++;return blob;},isCurrent:async()=>true,adapterMs:30,totalMs:1000};
+  await assert.rejects(auditMigrationMedia(args),e=>e.code==='audit-timeout');
+  assert.equal(aborted,true);assert.equal(later,0);
+  let cancelled=false;
+  const stalled={size:image.length,type:'image/png',stream:()=>new ReadableStream({pull(){return new Promise(()=>{});},cancel(){cancelled=true;}})};
+  await assert.rejects(auditMigrationMedia({...args,readLocal:async()=>stalled}),e=>e.code==='audit-timeout');
+  assert.equal(cancelled,true);assert.equal(later,0);
+  await assert.rejects(auditMigrationMedia({...args,isCurrent:async()=>new Promise(()=>{}),readLocal:async()=>{later++;return blob;}}),e=>e.code==='audit-timeout');
+  assert.equal(later,0);
+  console.log('PHASE7_AUDIT_ADAPTER_DEADLINES PASS');
+});
 
 // A disposable encrypted backup/restore qualification, not an export format,
 // migration CLI or production cutover. No credentials or backup bytes are logged.
