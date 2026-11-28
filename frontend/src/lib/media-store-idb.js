@@ -80,8 +80,16 @@ export function idbBackend({ idb = globalThis.indexedDB } = {}) {
       if (typeof r.size === 'number' && buf.byteLength !== r.size) return null
       try {
         const t = tx('readwrite')
-        const { blob: _old, ...rest } = r
-        t.objectStore(STORE).put({ ...rest, data: buf })
+        const s = t.objectStore(STORE)
+        const latest = s.get(hash)
+        latest.onsuccess = () => {
+          // Another tab may have updated owed metadata or removed the record
+          // while the old Blob was being read. Never resurrect a deleted row.
+          const row = latest.result
+          if (!row || row.data || !row.blob || row.size !== r.size || row.mime !== r.mime) return
+          const { blob: _old, ...rest } = row
+          s.put({ ...rest, data: buf })
+        }
         await done(t)
       } catch { /* still readable this time; the next read tries again */ }
       return new Blob([buf], { type: r.mime || '' })
@@ -99,6 +107,20 @@ export function idbBackend({ idb = globalThis.indexedDB } = {}) {
       const r = s.get(hash)
       r.onsuccess = () => { if (r.result) s.put({ ...r.result, ...fields }) }
       await done(t)
+    },
+    async removeIf(hash, guard) {
+      // Read and conditionally delete in one IDB transaction. A stale tab's
+      // in-memory ACK is not enough to evict a currently owed record.
+      const t = tx('readwrite'), s = t.objectStore(STORE)
+      let removed = null
+      const r = s.get(hash)
+      r.onsuccess = () => {
+        if (!r.result) return
+        const current = meta(r.result)
+        if (guard(current)) { removed = current; s.delete(hash) }
+      }
+      await done(t)
+      return removed
     },
     async remove(hash) {
       const t = tx('readwrite')

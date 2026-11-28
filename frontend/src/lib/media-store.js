@@ -234,6 +234,15 @@ export function createMediaStore(backend, {
       await ready()
       const rec = index.get(hash)
       if (!rec || !guard(rec)) return null
+      if (typeof be.removeIf === 'function') {
+        const removed = await be.removeIf(hash, current => {
+          const local = index.get(hash)
+          return local === rec && guard(local) && guard(current)
+        })
+        if (!removed) return null
+        if (index.get(hash) === rec) { revokeNow(hash); index.delete(hash); emit() }
+        return removed
+      }
       revokeNow(hash)
       index.delete(hash)
       try { await be.remove(hash) }

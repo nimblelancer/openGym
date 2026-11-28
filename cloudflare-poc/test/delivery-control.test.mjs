@@ -6,7 +6,7 @@ import {setTimeout as sleep} from 'node:timers/promises';
 import {traceRunner} from './declared-http-trace-runner.mjs';
 import {classifyDeliveryError} from './delivery-error-class.mjs';
 
-test('Phase 7 local synthetic transport controls: unread vs fully consumed body',{timeout:120000},async()=>{
+test('Phase 7 local synthetic transport controls: unread vs fully consumed body',{timeout:300000},async()=>{
   const runner=await traceRunner('wrangler.phase7-trace.jsonc',{health:'/api/health',privateLogs:true,vars:origin=>({AUTH_SECRET:randomBytes(32).toString('hex'),SETUP_CODE:randomBytes(32).toString('hex'),API_ORIGIN:origin,RP_ID:'localhost',P5_MEDIA:'1'})});
   const b=Buffer.alloc(8388609,17);
   const send=mode=>new Promise(resolve=>{
@@ -32,5 +32,14 @@ test('Phase 7 local synthetic transport controls: unread vs fully consumed body'
     // This is only a control, not original HTTP acceptance. Require the
     // fully-consumed baseline to really deliver the Worker response.
     for(const o of observations.filter(x=>x.mode==='drain')){assert.equal(o.status,413);assert.equal(o.marker,true);assert.equal(o.outcome,'complete');assert.equal(o.offeredBytes,b.length);}
+    const bridge=[];
+    for(let i=0;i<3;i++)for(const mode of ['do-early','do-drain','do-materialized','do-bodyless'])bridge.push(await send(mode));
+    await sleep(250);
+    const events=runner.bridgeSummary();
+    console.log('PHASE7_DELIVERY_BRIDGE_CONTROL',JSON.stringify({observations:bridge,events,logClasses:runner.deliveryClasses()}));
+    // The DO-drained case must actually deliver its response. Other modes
+    // are diagnostic comparisons, not acceptance or a proposed runtime fix.
+    for(const o of bridge.filter(x=>x.mode==='do-drain')){assert.equal(o.status,413);assert.equal(o.marker,true);assert.equal(o.outcome,'complete');assert.equal(o.offeredBytes,b.length);}
+    for(const mode of ['do-early','do-drain','do-materialized','do-bodyless'])assert.equal(events.filter(e=>e.layer==='DO'&&e.mode===mode&&e.event==='entry').length,3);
   }finally{await runner.cleanup();}
 });

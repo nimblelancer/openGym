@@ -54,7 +54,7 @@ export async function traceRunner(config='wrangler.jsonc',opts={}) {
       await exited;
     }
   }
-  return { start, stop, call, base, origin, dir, deliveryClasses(){return classifyDeliveryError(log)}, controlSummary(){return [...log.matchAll(/P7CONTROL:(early|drain):return:413/g)].map(m=>m[1])}, traceSummary(){
+  return { start, stop, call, base, origin, dir, deliveryClasses(){return classifyDeliveryError(log)}, controlSummary(){return [...log.matchAll(/P7CONTROL:(early|drain):return:413/g)].map(m=>m[1])}, bridgeSummary(){return [...log.matchAll(/P7BRIDGE:(OUTER|DO):(do-early|do-drain|do-materialized|do-bodyless):(entry|return)(?::([1-5][0-9][0-9]))?/g)].map(m=>({layer:m[1],mode:m[2],event:m[3],...(m[4]?{status:Number(m[4])}:{})}))}, traceSummary(){
     // Only fixed marker grammar is exposed, never raw Wrangler logs.
     const events=[...log.matchAll(/P7TRACE:(OUTER|DO):(entry|return|throw)(?::([1-5][0-9][0-9]))?/g)].map(m=>({layer:m[1],event:m[2],...(m[3]?{status:Number(m[3])}:{})}));
     return events.slice(-32);

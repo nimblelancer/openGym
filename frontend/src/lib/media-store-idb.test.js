@@ -1,5 +1,6 @@
 import { describe, test, expect } from 'vitest'
 import { idbBackend } from './media-store-idb.js'
+import { createMediaStore } from './media-store.js'
 
 /* Just enough IndexedDB for the backend: one database, one object store keyed by `hash`, requests
    that answer on the next tick and transactions that complete after their last request. Values
@@ -94,4 +95,38 @@ describe('the IndexedDB media backend', () => {
     expect(row.data).toBeInstanceOf(ArrayBuffer)
     expect(await bytesOf(await be.getBlob('h4'))).toEqual([7, 8])
   })
+})
+
+test('Phase 7: two stores sharing IDB cannot evict a record newly marked owed by the other', async () => {
+  const idb = fakeIdb(), a = createMediaStore(idbBackend({ idb })), b = createMediaStore(idbBackend({ idb }))
+  const h = 'a'.repeat(64)
+  await a.put(h, new Blob(['original']), { mime: 'image/webp', pending: false })
+  expect((await b.list())[0].pending).toBe(false)
+  await a.markOwed(h)
+  expect(await b.removeIf(h, rec => !rec.pending && !rec.rejected)).toBeNull()
+  expect(idb.rows.get(h).pending).toBe(true)
+  expect(await (await a.get(h)).blob.text()).toBe('original')
+})
+
+test('Phase 7: legacy Blob read cannot overwrite newer owed metadata', async () => {
+  const idb = fakeIdb(), be = idbBackend({ idb })
+  await be.open()
+  const blob = new Blob(['old'])
+  idb.rows.set('h5', { hash: 'h5', mime: 'image/webp', size: 3, pending: false, blob: {
+    arrayBuffer: async () => { await be.patch('h5', { pending: true }); return blob.arrayBuffer() }
+  } })
+  expect(await (await be.getBlob('h5')).text()).toBe('old')
+  expect(idb.rows.get('h5').pending).toBe(true)
+  expect(idb.rows.get('h5').data).toBeInstanceOf(ArrayBuffer)
+})
+
+test('Phase 7: legacy Blob read never resurrects a removed record', async () => {
+  const idb = fakeIdb(), be = idbBackend({ idb })
+  await be.open()
+  const blob = new Blob(['old'])
+  idb.rows.set('h6', { hash: 'h6', mime: 'image/webp', size: 3, blob: {
+    arrayBuffer: async () => { await be.remove('h6'); return blob.arrayBuffer() }
+  } })
+  expect(await (await be.getBlob('h6')).text()).toBe('old')
+  expect(idb.rows.has('h6')).toBe(false)
 })

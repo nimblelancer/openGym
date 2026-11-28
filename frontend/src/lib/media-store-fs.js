@@ -116,16 +116,23 @@ export function fsBackend({
         if (!m || recs[m[1]]) continue
         // A file the index never got to list (the app died within the debounce). Its name is
         // its hash; one whose bytes do not match is half a write and goes.
+        let blob, sniffed, digest
         try {
-          const blob = await readFileBlob(name)
+          blob = await readFileBlob(name)
           const head = new Uint8Array(await blob.slice(0, 64).arrayBuffer())
-          const sniffed = sniffKind(head)
-          if ((await hash(blob)) !== m[1] || !sniffed || !MEDIA_MIMES[sniffed.mime]) throw new Error('mismatch')
-          recs[m[1]] = { hash: m[1], mime: sniffed.mime, size: blob.size, putAt: Date.now(), shownAt: 0, pending: true, rejected: false }
-          changed = true
+          sniffed = sniffKind(head)
+          digest = await hash(blob)
         } catch {
-          FS.deleteFile(opts(DIR + '/' + name)).catch(() => {})
+          // An unavailable WebView read is not proof of corrupt bytes.
+          // Preserve the original and retry reconciliation on a later open.
+          continue
         }
+        if (digest !== m[1] || !sniffed || !MEDIA_MIMES[sniffed.mime]) {
+          FS.deleteFile(opts(DIR + '/' + name)).catch(() => {})
+          continue
+        }
+        recs[m[1]] = { hash: m[1], mime: sniffed.mime, size: blob.size, putAt: Date.now(), shownAt: 0, pending: true, rejected: false }
+        changed = true
       }
       if (changed) await saveIndex()
       app().then(({ App }) => App.addListener('appStateChange', ({ isActive }) => { if (!isActive) flush() })).catch(() => {})
@@ -161,7 +168,16 @@ export function fsBackend({
         // The marker is written first; if index publication fails, a cold
         // reopen still treats the original as owed. A failed marker write
         // remains an error, not evidence of durable preservation.
-        if (fields.pending) await FS.writeFile({ ...opts(owedName(h)), data: '1', encoding: Encoding.UTF8, recursive: true })
+        if (fields.pending) {
+          try { await FS.writeFile({ ...opts(owedName(h)), data: '1', encoding: Encoding.UTF8, recursive: true }) }
+          catch (error) {
+            // Independently attempt the index even when the sidecar fails.
+            // Still report marker failure; do not continue an upload on a
+            // partially qualified persistence path.
+            await saveIndex(true).catch(() => {})
+            throw error
+          }
+        }
         await saveIndex(true)
         if (!fields.pending) {
           // Clear only after durable ACK metadata. Failure conservatively

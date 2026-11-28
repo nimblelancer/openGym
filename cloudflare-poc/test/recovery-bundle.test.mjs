@@ -78,3 +78,30 @@ test('bundle refuses interrupted, omitted, tampered, foreign and swapped invento
     console.log('PHASE6_BUNDLE_INCOMPLETE_TAMPER_FAIL_CLOSED PASS');
   }finally{key.fill(0);wrong.fill(0);await rm(dir,{recursive:true,force:true});}
 });
+
+test('Phase 7: independent synthetic backup copy retains exact inventory and rejects stale manifest identity',async()=>{
+  const dir=await mkdtemp(join(tmpdir(),'opengym-p7-independent-')),key=randomBytes(32);
+  try{
+    const rows=[makeRow(1024,1),makeRow(2048,2,'device')],p=manifest(rows);
+    const primary=join(dir,'primary'),copy=join(dir,'copy'),newer=join(dir,'newer');
+    const saved=await persistRecoveryBundle(primary,p,key,owner,source(rows));
+    const {mkdir}=await import('node:fs/promises');
+    await mkdir(copy,{mode:0o700});
+    for(const name of await readdir(primary))await copyFile(join(primary,name),join(copy,name));
+    const checked=await verifyRecoveryBundle(copy,key,owner);
+    assert.equal(checked.manifestDigest,saved.manifestDigest);
+    assert.deepEqual(checked.manifest,p);
+    assert.equal(checked.offProviderVerified,false);
+    assert.equal(checked.cutoverAuthorized,false);
+    const next=JSON.parse(JSON.stringify(p));
+    next.snapshots[0].revision=4;next.snapshots[0].writeIdentity='newer-write';
+    next.snapshots[0].state._rev=4;next.snapshots[0].state._wid='newer-write';
+    await persistRecoveryBundle(newer,next,key,owner,source(rows));
+    await assert.rejects(readVerifiedRestoreObject(newer,key,owner,saved.manifestDigest,rows[0].hash),/manifest changed/);
+    const restored=await readVerifiedRestoreObject(copy,key,owner,saved.manifestDigest,rows[0].hash);
+    try{assert.equal(createHash('sha256').update(restored.bytes).digest('hex'),rows[0].hash);}
+    finally{restored.bytes.fill(0);}
+    assert.equal((await verifyRecoveryBundle(primary,key,owner)).manifestDigest,saved.manifestDigest);
+    console.log('PHASE7_INDEPENDENT_SYNTHETIC_COPY_FENCE PASS');
+  }finally{key.fill(0);await rm(dir,{recursive:true,force:true});}
+});

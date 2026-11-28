@@ -179,3 +179,52 @@ it('Phase 7: clear the owed marker only after durable ACK; cold reopen stays owe
   expect(fs.files.has(marker)).toBe(false)
   expect([...await createMediaStore(fsBackend(fs.deps)).pendingHashes()]).toEqual([])
 })
+
+it('Phase 7: failed owed marker still attempts index persistence before reporting failure', async () => {
+  const fs = fakeFs()
+  const mod = await fs.deps.load()
+  const originalWrite = mod.Filesystem.writeFile
+  const backend = fsBackend(fs.deps), store = createMediaStore(backend)
+  const bytes = jpeg(), hash = await sha256Hex(bytes)
+  await store.put(hash, new Blob([bytes]), { mime: 'image/jpeg', pending: false })
+  await backend.flush()
+  mod.Filesystem.writeFile = async opts => {
+    if (opts.path.endsWith('.owed')) throw new Error('synthetic marker failure')
+    return originalWrite(opts)
+  }
+  await expect(store.markOwed(hash)).rejects.toThrow('synthetic marker failure')
+  const cold = createMediaStore(fsBackend(fs.deps))
+  expect([...await cold.pendingHashes()]).toEqual([hash])
+  expect(await sha256Hex(new Uint8Array(await (await cold.get(hash)).blob.arrayBuffer()))).toBe(hash)
+})
+
+it('Phase 7: both metadata writes fail explicitly; original remains readable and retry can recover', async () => {
+  const fs = fakeFs(), mod = await fs.deps.load()
+  const originalWrite = mod.Filesystem.writeFile
+  const backend = fsBackend(fs.deps), store = createMediaStore(backend)
+  const bytes = jpeg(), hash = await sha256Hex(bytes)
+  await store.put(hash, new Blob([bytes]), { mime: 'image/jpeg', pending: false })
+  await backend.flush()
+  mod.Filesystem.writeFile = async () => { throw new Error('synthetic disk failure') }
+  await expect(store.markOwed(hash)).rejects.toThrow('synthetic disk failure')
+  expect(store.pendingNow().has(hash)).toBe(true)
+  const cold = createMediaStore(fsBackend(fs.deps))
+  // Neither metadata write succeeded; do not claim durable owed recovery.
+  expect(await sha256Hex(new Uint8Array(await (await cold.get(hash)).blob.arrayBuffer()))).toBe(hash)
+  mod.Filesystem.writeFile = originalWrite
+  await store.markOwed(hash)
+  expect([...await createMediaStore(fsBackend(fs.deps)).pendingHashes()]).toEqual([hash])
+})
+
+it('Phase 7: transient native orphan read error never deletes the original', async () => {
+  const fs = fakeFs(), bytes = jpeg(), hash = await sha256Hex(bytes)
+  const name = 'opengym-media/' + hash + '.jpg'
+  fs.files.set(name, bytes)
+  const unavailable = fsBackend({ ...fs.deps, fetchImpl: async () => { throw new Error('synthetic read failure') } })
+  await unavailable.open()
+  expect(fs.files.has(name)).toBe(true)
+  expect(fs.calls.some(c => c[0] === 'deleteFile' && c[1] === name)).toBe(false)
+  const cold = createMediaStore(fsBackend(fs.deps))
+  expect([...await cold.pendingHashes()]).toEqual([hash])
+  expect(await sha256Hex(new Uint8Array(await (await cold.get(hash)).blob.arrayBuffer()))).toBe(hash)
+})
