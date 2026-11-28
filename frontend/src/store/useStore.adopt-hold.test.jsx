@@ -22,6 +22,10 @@ vi.mock('@capacitor/filesystem', () => ({
   Directory: { Data: 'DATA', Documents: 'DOCUMENTS', Cache: 'CACHE' },
   Encoding: { UTF8: 'utf8' },
   Filesystem: {
+    readdir: async ({ path, directory }) => {
+      const prefix = directory + '/' + (path ? path + '/' : '')
+      return { files: [...h.files.keys()].filter(k => k.startsWith(prefix)).map(k => k.slice(prefix.length)).filter(name => name && !name.includes('/')).map(name => ({ name, type: 'file' })) }
+    },
     readFile: async ({ path, directory }) => {
       const k = directory + '/' + path
       if (!h.files.has(k)) throw new Error('File does not exist')
