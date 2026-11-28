@@ -13,6 +13,10 @@
    at BASE and Capacitor's local server for any other URL. */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { syncFingerprint } from '../lib/sync-changes.js'
+import { execFileSync } from 'node:child_process'
+import { mkdtempSync, readFileSync, writeFileSync, rmSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 
 const h = vi.hoisted(() => {
   vi.stubEnv('VITE_MOBILE', '1')   // lib/mobile.js: MOBILE = import.meta.env.VITE_MOBILE === '1'
@@ -31,11 +35,13 @@ vi.mock('@capacitor/filesystem', () => ({
     readFile: async ({ path, directory }) => {
       const k = directory + '/' + path
       if (!h.files.has(k)) throw new Error('File does not exist')
+      if (k === 'DATA/opengym-stash.json' && h.stashDisk) return { data: h.stashDisk.read() }
       return { data: h.files.get(k) }
     },
     writeFile: async ({ path, directory, data }) => {
       if (path === 'opengym-stash.json' && h.holdStashWrite) await h.holdStashWrite()
       if (h.refuse.has(path)) throw new Error('No space left on device')
+      if (directory === 'DATA' && path === 'opengym-stash.json' && h.stashDisk) h.stashDisk.write(data)
       h.files.set(directory + '/' + path, data)
       return { uri: 'file://' + path }
     },
@@ -943,3 +949,73 @@ it('Phase 7: adoption cleanup retains a newer publication and foreign entry duri
   expect(readFile('opengym-stash.json')).toEqual({ [key]: newer, [foreignKey]: foreign })
   console.log('PHASE7_CONCURRENT_STASH_CLEANUP_FENCE PASS')
 })
+
+it('Phase 7: a separate process publishes native stash bytes during acknowledged adoption', async () => {
+  pairedPhone()
+  h.server = refusing
+  const dir = mkdtempSync(join(tmpdir(), 'opengym-p7-stash-'))
+  const file = join(dir, 'opengym-stash.json')
+  let readsAfterPublication = 0, writesAfterPublication = 0, published = false
+  h.stashDisk = {
+    read: () => {
+      if (published) readsAfterPublication++
+      return readFileSync(file, 'utf8')
+    },
+    write: data => {
+      if (published) writesAfterPublication++
+      writeFileSync(file, data)
+    },
+  }
+  try {
+    const store = await freshStore()
+    await store.getState().boot()
+    store.getState().update(s => { s.workouts.push(workout('owed-process', '2026-09-15')) })
+    await store.getState().pushState()
+    expect(await store.getState().disconnectServer({ force: true })).toMatchObject({ stashed: true })
+    const key = BASE + '|' + USER.id
+    const originalBytes = readFileSync(file, 'utf8')
+    const previous = JSON.parse(originalBytes)[key]
+    expect(ids(previous.state.workouts)).toContain('owed-process')
+    const newer = { ...previous, at: previous.at + 1,
+      state: { ...clone(previous.state), workouts: [...previous.state.workouts, workout('child-published', '2026-09-16')] } }
+    const foreignKey = BASE + '|foreign'
+    const foreign = { server: BASE, uid: 'foreign', name: 'synthetic', at: previous.at + 2,
+      state: { ...clone(DEF), workouts: [workout('foreign-process-only', '2026-09-17')] } }
+    const expectedBytes = JSON.stringify({ [key]: newer, [foreignKey]: foreign })
+    const srv = serverWith(SERVER_STATE)
+    h.server = (path, method, init) => {
+      const result = srv.handle(path, method, init)
+      if (!published && path === '/api/data' && method === 'PUT' && result.ok &&
+          ids(JSON.parse(init.body).state.workouts).includes('owed-process')) {
+        // A real child process changes only the independent native disk copy.
+        // The browser mirror remains stale; no production filesystem transaction
+        // or uncontrolled simultaneous-write guarantee is implied.
+        const pid = Number(execFileSync(process.execPath, ['-e',
+          'const fs=require("node:fs");const p=process.argv[1];fs.writeFileSync(p+".next",fs.readFileSync(0));fs.renameSync(p+".next",p);process.stdout.write(String(process.pid));',
+          file], { input: expectedBytes, encoding: 'utf8', timeout: 5000, maxBuffer: 1024 }))
+        expect(Number.isSafeInteger(pid) && pid > 0 && pid !== process.pid).toBe(true)
+        expect(readFileSync(file, 'utf8')).toBe(expectedBytes)
+        expect(h.files.get('DATA/opengym-stash.json')).toBe(originalBytes)
+        published = true
+      }
+      return result
+    }
+    await store.getState().connectToServer(BASE, 'ABCD2345', async () => false)
+    expect(published).toBe(true)
+    expect(readsAfterPublication).toBeGreaterThan(0)
+    expect(writesAfterPublication).toBe(0)
+    expect(readFileSync(file, 'utf8')).toBe(expectedBytes)
+    expect(ids(srv.doc.workouts)).toContain('owed-process')
+    expect(ids(srv.doc.workouts)).not.toContain('child-published')
+    expect(ids(srv.doc.workouts)).not.toContain('foreign-process-only')
+    expect(ids(store.getState().S.workouts)).not.toContain('foreign-process-only')
+    expect(localStorage.getItem('gym_owner')).toBe(USER.id)
+    expect((await store.getState().keptState(BASE, USER.id))).toEqual(newer.state)
+    expect((await store.getState().keptState(BASE, 'foreign'))).toEqual(foreign.state)
+    expect(readFileSync(file, 'utf8')).toBe(expectedBytes)
+    console.log('PHASE7_CROSS_PROCESS_NATIVE_STASH_CLEANUP_FENCE PASS')
+  } finally {
+    h.stashDisk = null
+    rmSync(dir, { recursive: true, force: true })
+  }
+}, 20000)
