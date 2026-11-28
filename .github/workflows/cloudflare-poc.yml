@@ -255,9 +255,9 @@ jobs:
         working-directory: cloudflare-poc
         run: |
           mkdir -p reports
-          node --check src/recovery/archive.js && node --check src/recovery/disk.js
+          node --check src/recovery/archive.js && node --check src/recovery/disk.js && node --check src/recovery/bundle.js
           status=0
-          /usr/bin/time -v -o reports/privacy-recovery-process-profile.txt node --test --test-concurrency=1 test/privacy-recovery.test.mjs test/recovery-worker.test.mjs || status=$?
+          /usr/bin/time -v -o reports/privacy-recovery-process-profile.txt node --test --test-concurrency=1 test/privacy-recovery.test.mjs test/recovery-worker.test.mjs test/recovery-bundle.test.mjs || status=$?
           cat reports/privacy-recovery-process-profile.txt
           exit "$status"
       - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f

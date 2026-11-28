@@ -46,12 +46,12 @@ function checkJson(root){
 }
 // Verify known inventory only. Explicit snapshot and file lists are supplied
 // by a trusted local synthetic caller; unknown devices are not inferred empty.
-function validate(payload,expectedOwner){
+function validate(payload,expectedOwner,metadataOnly=false){
   requireThat(ownerOK(expectedOwner),'invalid expected owner');
   requireThat(exact(payload,['version','owner','snapshots','files'])&&payload.version===1&&payload.owner===expectedOwner,'archive version or owner mismatch');
   requireThat(Array.isArray(payload.snapshots)&&payload.snapshots.length>0&&payload.snapshots.length<=MAX_SNAPSHOTS,'invalid snapshot count');
   requireThat(Array.isArray(payload.files)&&payload.files.length<=MAX_ROWS,'invalid inventory count');
-  const ids=new Set(),refs=new Map(),remoteRefs=new Set(),known=new Set();let serverCount=0;
+  const ids=new Set(),refs=new Map(),remoteRefs=new Set(),known=new Set();let serverCount=0,stateBytes=0;
   function add(m){
     requireThat(record(m)&&hashOK(m.hash)&&mimeOK(m.mime)&&sizeOK(m.size),'invalid media reference');
     const prev=refs.get(m.hash);
@@ -64,6 +64,7 @@ function validate(payload,expectedOwner){
     requireThat(['server','device','stash'].includes(snap.kind)&&Number.isSafeInteger(snap.revision)&&snap.revision>=0,'invalid snapshot revision');
     requireThat(snap.writeIdentity===null||(typeof snap.writeIdentity==='string'&&snap.writeIdentity.length>0&&snap.writeIdentity.length<=128),'invalid write identity');
     requireThat(record(snap.state),'invalid snapshot state');checkJson(snap.state);
+    stateBytes+=Buffer.byteLength(JSON.stringify(snap.state));requireThat(stateBytes<=12*MB,'aggregate snapshot bound');
     if(snap.kind==='server'){
       serverCount++;
       requireThat((snap.state._rev??0)===snap.revision&&(snap.state._wid??null)===snap.writeIdentity,'server revision mismatch');
@@ -75,11 +76,13 @@ function validate(payload,expectedOwner){
   requireThat(serverCount===1,'exactly one server snapshot required');
   const rows=new Map();let encodedBytes=0;
   for(const f of payload.files){
-    requireThat(exact(f,['hash','mime','size','location','bytes'])&&hashOK(f.hash)&&mimeOK(f.mime)&&sizeOK(f.size)&&locationOK(f.location)&&!rows.has(f.hash),'invalid or duplicate inventory row');
+    requireThat(exact(f,metadataOnly?['hash','mime','size','location']:['hash','mime','size','location','bytes'])&&hashOK(f.hash)&&mimeOK(f.mime)&&sizeOK(f.size)&&locationOK(f.location)&&!rows.has(f.hash),'invalid or duplicate inventory row');
+    if(!metadataOnly){
     requireThat(typeof f.bytes==='string'&&f.bytes.length===4*Math.ceil(f.size/3),'invalid media encoding length');
     encodedBytes+=f.bytes.length;requireThat(encodedBytes<=MAX_ARCHIVE_BYTES,'inventory encoding bound');
     const b=Buffer.from(f.bytes,'base64');
     requireThat(b.length===f.size&&b.toString('base64')===f.bytes&&digest(b)===f.hash,'media integrity mismatch');
+    }
     const expected=refs.get(f.hash);
     requireThat(!expected||(expected.mime===f.mime&&expected.size===f.size),'inventory metadata mismatch');
     rows.set(f.hash,f);
@@ -107,6 +110,7 @@ function quotaOf({rows,remoteRefs}){
     withinKnownMediaLimits:serverBytes<=MEDIA_CONFIG.quotaMB*MB&&serverCount<=MEDIA_MAX_OBJECTS&&overLimit.length===0,
     missingServerReferences:missingServerReferences.sort(),overLimit:overLimit.sort(),completeAccountInventoryVerified:false,cutoverAuthorized:false};
 }
+export function inspectRecoveryManifest(payload,expectedOwner){return quotaOf(validate(payload,expectedOwner,true));}
 export function inspectRecoveryInventory(payload,expectedOwner){return quotaOf(validate(payload,expectedOwner));}
 export function sealRecoveryArchive(payload,key,expectedOwner){
   requireThat(keyOK(key),'invalid recovery key');validate(payload,expectedOwner);

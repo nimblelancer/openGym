@@ -7,6 +7,9 @@ import {join} from 'node:path';
 import {localRunner} from './local-runner.mjs';
 import {authenticator} from './auth-fixture.mjs';
 import {config} from '../src/auth/session.js';
+import {DatabaseSync} from 'node:sqlite';
+import {decode,MAX_STORED} from '../src/storage/codec.js';
+import {forClient} from '../src/sync/transition.js';
 import {persistRecoveryFile,readRecoveryFile} from '../src/recovery/disk.js';
 import {inspectRecoveryInventory,MAX_ARCHIVE_BYTES} from '../src/recovery/archive.js';
 
@@ -42,6 +45,31 @@ test('exclusive private durable archive publication and fail-closed readback',as
     console.log('PHASE6_DURABLE_EXCLUSIVE_ARCHIVE PASS');
   }finally{key.fill(0);await rm(dir,{recursive:true,force:true});}
 });
+// Offline synthetic inspection only, with the Worker stopped. No raw DB export.
+async function committedStateEvidence(root,owner,expected){
+  async function find(dir){
+    for(const e of await readdir(dir,{withFileTypes:true})){
+      const p=join(dir,e.name);
+      if(e.isDirectory()){const found=await find(p);if(found)return found;}
+      else if(e.isFile()&&e.name.endsWith('.sqlite')){
+        const db=new DatabaseSync(p,{readOnly:true});
+        try{if(db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='profile_state'").get())return p;}finally{db.close();}
+      }
+    }
+  }
+  const p=await find(root);assert.ok(p,'local state database missing');const db=new DatabaseSync(p,{readOnly:true});
+  try{
+    assert.equal(db.prepare('SELECT count(*) n FROM profile_state').get().n,1);
+    const meta=db.prepare('SELECT * FROM profile_state WHERE profile_id=?').get(owner);
+    const rows=db.prepare('SELECT idx,bytes FROM profile_chunks WHERE profile_id=? ORDER BY idx LIMIT 17').all(owner);
+    assert.ok(meta);const state=decode(meta,rows);
+    assert.deepEqual(forClient(state),expected.state);assert.equal(meta.rev,expected.rev);
+    assert.equal(meta.byte_count,rows.reduce((n,r)=>n+r.bytes.length,0));
+    assert.equal(meta.byte_count,Buffer.byteLength(JSON.stringify(state)));
+    assert.ok(meta.byte_count<=MAX_STORED);
+    return {committedStateBytes:meta.byte_count,stateLimitBytes:MAX_STORED};
+  }finally{db.close();}
+}
 async function worker(){
   let signing=secret();const setup=secret();
   const runner=await localRunner('wrangler.web-media.jsonc',{health:'/api/health',privateLogs:true,vars:origin=>({AUTH_SECRET:signing,SETUP_CODE:setup,API_ORIGIN:origin,RP_ID:'localhost',P5_MEDIA:'1'})});
@@ -102,6 +130,13 @@ test('durable encrypted recovery against independent local Workers, actual quota
       assert.equal(swept.policy,'retain-until-authorized-delete');assert.deepEqual(swept.usage,got.usage);
     };
     await reconcile(source,files,q);await source.current(original);
+    // Omitting a retained row is detected by actual R2 totals, even when all
+    // named references are present. Never infer completeness from missing=[].
+    const incomplete=inspectRecoveryInventory({...p,files:[files[0]]},owner);
+    const actual=await source.json(await source.usage([files[0].hash]));
+    assert.deepEqual(actual.missing,[]);assert.notEqual(actual.usage.count,incomplete.serverCount);
+    assert.notEqual(actual.usage.bytes,incomplete.serverBytes);
+    console.log('PHASE6_RETAINED_INVENTORY_OMISSION_DETECTED PASS');
     // Actual authenticated input bound, no allocation of large request bodies.
     assert.equal((await source.usage(Array(1001).fill(photo.hash))).status,400);
     assert.equal((await source.usage(['not-a-hash'])).status,400);
@@ -109,6 +144,9 @@ test('durable encrypted recovery against independent local Workers, actual quota
     await source.current(original);
     const saved=await persistRecoveryFile(path,p,key,owner);await source.current(original);
     key.fill(0);await source.runner.stop();
+    const sourceStateQuota=await committedStateEvidence(source.runner.dir,owner,original);
+    assert.ok(sourceStateQuota.committedStateBytes>0);
+    assert.equal(sourceStateQuota.stateLimitBytes,8*1024*1024);
     recovered=await readFile(keyPath);assert.equal(recovered.length,32);
     const reopened=await readRecoveryFile(path,recovered,owner);assert.equal(reopened.archiveDigest,saved.archiveDigest);
     assert.deepEqual(reopened.payload,p);
@@ -138,7 +176,11 @@ test('durable encrypted recovery against independent local Workers, actual quota
     assert.equal((await target.save({workouts:[],routines:[]},empty)).status,409);
     await target.current(restored);
     await reconcile(target,inventory,q);
-    await target.runner.stop();await target.runner.start();await target.current(restored);
+    await target.runner.stop();
+    const destStateQuota=await committedStateEvidence(target.runner.dir,dest,restored);
+    assert.ok(destStateQuota.committedStateBytes>0);
+    console.log('PHASE6_COMMITTED_STATE_BYTE_RECONCILIATION PASS');
+    await target.runner.start();await target.current(restored);
     for(const f of inventory)assert.deepEqual(await target.get(f),f);
     // Restart original source and rotate signing secret, then confirm old session
     // and pending proof no longer work, but workout data and media are intact.

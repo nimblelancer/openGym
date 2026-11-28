@@ -1,0 +1,68 @@
+import {test} from 'node:test';
+import assert from 'node:assert/strict';
+import {createHash,randomBytes} from 'node:crypto';
+import {mkdtemp,rm,readFile,writeFile,rename,copyFile,readdir} from 'node:fs/promises';
+import {tmpdir} from 'node:os';
+import {join} from 'node:path';
+import {persistRecoveryBundle,verifyRecoveryBundle} from '../src/recovery/bundle.js';
+const MB=1024*1024,owner='syntheticOwner01';
+const makeRow=(size,seed,location='server')=>{
+  const h=createHash('sha256'),b=Buffer.alloc(MB,seed);
+  for(let i=0;i<size;i+=MB)h.update(b.subarray(0,Math.min(MB,size-i)));
+  return {hash:h.digest('hex'),mime:'video/mp4',size,location};
+};
+const source=rows=>async function*(row){
+  const seed=rows.findIndex(r=>r.hash===row.hash)+1;assert.ok(seed>0);
+  for(let n=0;n<row.size;n+=MB)yield Buffer.alloc(Math.min(MB,row.size-n),seed);
+};
+function manifest(rows){
+  const state={_rev:3,_wid:'synthetic-write',workouts:[],routines:[]};
+  const device=rows.find(r=>r.location==='device');
+  return {version:1,owner,snapshots:[{id:'server',kind:'server',owner,revision:3,writeIdentity:'synthetic-write',state},
+    ...(device?[{id:'phone',kind:'device',owner,revision:3,writeIdentity:'synthetic-write',state:{active:{entries:[{sets:[{media:[{...device,kind:'video',width:1,height:1,local:true}]}]}]}}}]:[])],files:rows};
+}
+test('capacity bundle streams 200 MiB retained remote inventory and oversized device original',{timeout:120000},async()=>{
+  const dir=await mkdtemp(join(tmpdir(),'opengym-p6-capacity-')),key=randomBytes(32);
+  try{
+    const rows=Array.from({length:25},(_,i)=>makeRow(8*MB,i+1));rows.push(makeRow(8*MB+1,26,'device'));
+    const p=manifest(rows),path=join(dir,'backup');
+    const got=await persistRecoveryBundle(path,p,key,owner,source(rows));
+    assert.deepEqual(got.manifest,p);assert.equal(got.verifiedMediaBytes,208*MB+1);
+    assert.equal(got.quota.serverBytes,200*MB);assert.equal(got.quota.retainedCount,25);assert.equal(got.quota.deviceOnlyBytes,8*MB+1);
+    assert.equal(got.quota.withinKnownMediaLimits,true);assert.equal(got.cutoverAuthorized,false);
+    const reread=await verifyRecoveryBundle(path,key,owner);assert.equal(reread.manifestDigest,got.manifestDigest);
+    assert.equal(reread.verifiedMediaBytes,208*MB+1);
+    console.log('PHASE6_CAPACITY_BUNDLE_208MIB PASS');
+  }finally{key.fill(0);await rm(dir,{recursive:true,force:true});}
+});
+test('bundle refuses interrupted, omitted, tampered, foreign and swapped inventory without publishing incomplete backup',async()=>{
+  const dir=await mkdtemp(join(tmpdir(),'opengym-p6-bundle-fault-')),key=randomBytes(32),wrong=randomBytes(32);
+  try{
+    const rows=[makeRow(1024,1),makeRow(2048,2)],p=manifest(rows),path=join(dir,'backup'),other=join(dir,'other');
+    const saved=await persistRecoveryBundle(path,p,key,owner,source(rows));
+    await assert.rejects(persistRecoveryBundle(path,p,key,owner,source(rows)),e=>e.code==='EEXIST');
+    await assert.rejects(verifyRecoveryBundle(path,wrong,owner),/authentication failed/);
+    await assert.rejects(verifyRecoveryBundle(path,key,'syntheticOwner02'),/owner mismatch/);
+    await persistRecoveryBundle(other,p,key,owner,source(rows));
+    const name=rows[0].hash+'.enc',file=join(path,name),original=await readFile(file);
+    await copyFile(join(other,name),file);
+    await assert.rejects(verifyRecoveryBundle(path,key,owner),/authentication failed/);
+    await writeFile(file,original);
+    const damaged=Buffer.from(original);damaged[damaged.length-1]^=1;await writeFile(file,damaged);
+    await assert.rejects(verifyRecoveryBundle(path,key,owner),/authentication failed/);
+    await writeFile(file,original);
+    await rename(file,join(dir,'missing.enc'));await assert.rejects(verifyRecoveryBundle(path,key,owner),/inventory incomplete/);
+    await rename(join(dir,'missing.enc'),file);
+    assert.equal((await verifyRecoveryBundle(path,key,owner)).manifestDigest,saved.manifestDigest);
+    const incomplete=join(dir,'incomplete');
+    await assert.rejects(persistRecoveryBundle(incomplete,p,key,owner,async function*(){yield Buffer.alloc(1);throw Error('synthetic interrupted source');}),/interrupted source/);
+    assert.ok(!(await readdir(incomplete)).includes('manifest.enc'));
+    await assert.rejects(verifyRecoveryBundle(incomplete,key,owner),e=>e.code==='ENOENT');
+    await assert.rejects(persistRecoveryBundle(incomplete,p,key,owner,source(rows)),e=>e.code==='EEXIST');
+    const omitted=manifest(rows);omitted.snapshots[0].state.customEx=[{media:{...rows[0],kind:'video',width:1,height:1}}];omitted.files=rows.slice(1);
+    await assert.rejects(persistRecoveryBundle(join(dir,'omitted'),omitted,key,owner,source(rows)),/missing known media/);
+    const excessive=manifest(Array.from({length:6},(_,i)=>({...makeRow(1,i+1),size:100*MB})));
+    await assert.rejects(persistRecoveryBundle(join(dir,'excessive'),excessive,key,owner,source(rows)),/aggregate byte bound/);
+    console.log('PHASE6_BUNDLE_INCOMPLETE_TAMPER_FAIL_CLOSED PASS');
+  }finally{key.fill(0);wrong.fill(0);await rm(dir,{recursive:true,force:true});}
+});
