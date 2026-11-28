@@ -7,6 +7,8 @@ import {constants} from 'node:fs';
 import {open,mkdir,readdir,link} from 'node:fs/promises';
 import {join,dirname} from 'node:path';
 import {inspectRecoveryManifest,MAX_ARCHIVE_BYTES} from './archive.js';
+import {MEDIA_CONFIG} from '../media.js';
+import {MEDIA_MIMES} from '../../../frontend/src/lib/media-refs.js';
 const MB=1024*1024,CHUNK=MB,MAX_TOTAL=512*MB;
 const MAGIC=Buffer.from('OGB6v1'),NONCE=12,TAG=16,HEADER=NONCE+TAG;
 const ok=(cond,msg)=>{if(!cond)throw Error(msg);};
@@ -48,7 +50,7 @@ async function writeObject(dir,id,owner,row,key,read){
     await writeExact(f,cipher.getAuthTag(),NONCE);await f.sync();
   }finally{await f.close();}
 }
-async function verifyObject(dir,id,owner,row,key){
+async function verifyObject(dir,id,owner,row,key,output=null){
   const {f,s}=await privateFile(join(dir,filename(row)),row.size+HEADER);
   try{
     ok(s.size===row.size+HEADER,'bundle object size mismatch');
@@ -56,7 +58,7 @@ async function verifyObject(dir,id,owner,row,key){
     d.setAAD(aad(id,owner,row));d.setAuthTag(header.subarray(NONCE));
     for(let pos=0;pos<row.size;pos+=CHUNK){
       const b=d.update(await readExact(f,Math.min(CHUNK,row.size-pos),HEADER+pos));
-      try{h.update(b);}finally{b.fill(0);}
+      try{h.update(b);if(output)b.copy(output,pos);}finally{b.fill(0);}
     }
     try{ok(d.final().length===0,'unexpected decipher tail');}catch{throw Error('bundle object authentication failed');}
     ok(h.digest('hex')===row.hash,'bundle object hash mismatch');await unchanged(f,s);
@@ -102,4 +104,23 @@ export async function persistRecoveryBundle(dir,p,key,owner,read){
   const {unlink}=await import('node:fs/promises');await unlink(temp);await syncDir(dir);
   // A post-publication error is ambiguous, not a reason to remove the backup.
   return verifyRecoveryBundle(dir,key,owner);
+}
+
+// Reopen the pinned manifest and authenticate a single compatible remote object
+// into at most 8 MiB of memory. No bytes are returned before GCM final and SHA
+// verification. The caller must first verify the entire bundle and freeze the
+// destination; this helper does not authorize a state commit or any restore.
+// Device-only originals remain preserved; they must not be silently uploaded.
+export async function readVerifiedRestoreObject(dir,key,owner,manifestDigest,hash){
+  checkKey(key);
+  const {id,p,digest}=await readManifest(join(dir,'manifest.enc'),key);
+  ok(digest===manifestDigest,'bundle manifest changed');
+  checkManifest(p,owner);
+  const row=p.files.find(f=>f.hash===hash);
+  ok(row&&row.location!=='device','object is not a remote restore candidate');
+  const cap=MEDIA_CONFIG[MEDIA_MIMES[row.mime].kind+'MB']*MB;
+  ok(Number.isSafeInteger(cap)&&row.size<=cap&&row.size<=8*MB,'restore object size limit');
+  const bytes=Buffer.alloc(row.size);
+  try{await verifyObject(dir,id,owner,row,key,bytes);return {row,bytes};}
+  catch(e){bytes.fill(0);throw e;}
 }

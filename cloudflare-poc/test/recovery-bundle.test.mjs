@@ -4,7 +4,7 @@ import {createHash,randomBytes} from 'node:crypto';
 import {mkdtemp,rm,readFile,writeFile,rename,copyFile,readdir} from 'node:fs/promises';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
-import {persistRecoveryBundle,verifyRecoveryBundle} from '../src/recovery/bundle.js';
+import {persistRecoveryBundle,verifyRecoveryBundle,readVerifiedRestoreObject} from '../src/recovery/bundle.js';
 const MB=1024*1024,owner='syntheticOwner01';
 const makeRow=(size,seed,location='server')=>{
   const h=createHash('sha256'),b=Buffer.alloc(MB,seed);
@@ -32,6 +32,15 @@ test('capacity bundle streams 200 MiB retained remote inventory and oversized de
     assert.equal(got.quota.withinKnownMediaLimits,true);assert.equal(got.cutoverAuthorized,false);
     const reread=await verifyRecoveryBundle(path,key,owner);assert.equal(reread.manifestDigest,got.manifestDigest);
     assert.equal(reread.verifiedMediaBytes,208*MB+1);
+    let restored=0;
+    for(const row of rows.filter(r=>r.location==='server')){
+      const item=await readVerifiedRestoreObject(path,key,owner,got.manifestDigest,row.hash);
+      try{assert.deepEqual(item.row,row);assert.equal(createHash('sha256').update(item.bytes).digest('hex'),row.hash);assert.ok(item.bytes.length<=8*MB);restored+=item.bytes.length;}
+      finally{item.bytes.fill(0);}
+    }
+    assert.equal(restored,200*MB);
+    await assert.rejects(readVerifiedRestoreObject(path,key,owner,got.manifestDigest,rows.at(-1).hash),/not a remote restore candidate/);
+    console.log('PHASE6_CAPACITY_BOUNDED_RESTORE_READ_200MIB PASS');
     console.log('PHASE6_CAPACITY_BUNDLE_208MIB PASS');
   }finally{key.fill(0);await rm(dir,{recursive:true,force:true});}
 });
@@ -50,7 +59,10 @@ test('bundle refuses interrupted, omitted, tampered, foreign and swapped invento
     await writeFile(file,original);
     const damaged=Buffer.from(original);damaged[damaged.length-1]^=1;await writeFile(file,damaged);
     await assert.rejects(verifyRecoveryBundle(path,key,owner),/authentication failed/);
+    await assert.rejects(readVerifiedRestoreObject(path,key,owner,saved.manifestDigest,rows[0].hash),/authentication failed/);
     await writeFile(file,original);
+    await assert.rejects(readVerifiedRestoreObject(path,key,owner,'0'.repeat(64),rows[0].hash),/manifest changed/);
+    await assert.rejects(readVerifiedRestoreObject(path,key,owner,saved.manifestDigest,'0'.repeat(64)),/not a remote restore candidate/);
     await rename(file,join(dir,'missing.enc'));await assert.rejects(verifyRecoveryBundle(path,key,owner),/inventory incomplete/);
     await rename(join(dir,'missing.enc'),file);
     assert.equal((await verifyRecoveryBundle(path,key,owner)).manifestDigest,saved.manifestDigest);

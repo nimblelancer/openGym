@@ -10,13 +10,14 @@ import {config} from '../src/auth/session.js';
 import {DatabaseSync} from 'node:sqlite';
 import {decode,MAX_STORED} from '../src/storage/codec.js';
 import {forClient} from '../src/sync/transition.js';
+import {persistRecoveryBundle,verifyRecoveryBundle,readVerifiedRestoreObject} from '../src/recovery/bundle.js';
 import {persistRecoveryFile,readRecoveryFile} from '../src/recovery/disk.js';
 import {inspectRecoveryInventory,MAX_ARCHIVE_BYTES} from '../src/recovery/archive.js';
 
 const sha=b=>createHash('sha256').update(b).digest('hex');
 const secret=()=>randomBytes(32).toString('hex');
 const png=Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aZ1sAAAAASUVORK5CYII=','base64');
-function wav(){const b=Buffer.alloc(44+2205*2);b.write('RIFF');b.writeUInt32LE(b.length-8,4);b.write('WAVEfmt ',8);b.writeUInt32LE(16,16);b.writeUInt16LE(1,20);b.writeUInt16LE(1,22);b.writeUInt32LE(22050,24);b.writeUInt32LE(44100,28);b.writeUInt16LE(2,32);b.writeUInt16LE(16,34);b.write('data',36);b.writeUInt32LE(b.length-44,40);return b;}
+function wav(samples=2205){const b=Buffer.alloc(44+samples*2);b.write('RIFF');b.writeUInt32LE(b.length-8,4);b.write('WAVEfmt ',8);b.writeUInt32LE(16,16);b.writeUInt16LE(1,20);b.writeUInt16LE(1,22);b.writeUInt32LE(22050,24);b.writeUInt32LE(44100,28);b.writeUInt16LE(2,32);b.writeUInt16LE(16,34);b.write('data',36);b.writeUInt32LE(b.length-44,40);return b;}
 function row(b,mime,location='server'){return {hash:sha(b),mime,size:b.length,location,bytes:b.toString('base64')};}
 const photo=row(png,'image/png'),retained=row(wav(),'audio/wav');
 const media={kind:'image',hash:photo.hash,mime:photo.mime,size:photo.size,width:1,height:1,at:1};
@@ -74,7 +75,7 @@ async function worker(){
   let signing=secret();const setup=secret();
   const runner=await localRunner('wrangler.web-media.jsonc',{health:'/api/health',privateLogs:true,vars:origin=>({AUTH_SECRET:signing,SETUP_CODE:setup,API_ORIGIN:origin,RP_ID:'localhost',P5_MEDIA:'1'})});
   const dev=authenticator({rp:'localhost',origin:runner.origin});let owner=null,cookie='',counter=0;
-  const raw=async(p,method='GET',body,headers={},auth=true)=>fetch(runner.base+p,{method,redirect:'error',headers:{connection:'close',origin:runner.origin,...(auth&&cookie?{cookie}:{}),...headers},...(body===undefined?{}:{body}),signal:AbortSignal.timeout(15000)});
+  const raw=async(p,method='GET',body,headers={},auth=true)=>fetch(runner.base+p,{method,redirect:'error',headers:{connection:'close',origin:runner.origin,...(auth&&cookie?{cookie}:{}),...headers},...(body===undefined?{}:{body}),...(body instanceof ReadableStream?{duplex:'half'}:{}),signal:AbortSignal.timeout(15000)});
   const json=async(res,status=200)=>{assert.equal(res.status,status);assert.match(res.headers.get('content-type')||'',/application\/json/);return res.json();};
   const post=(p,b,auth=true)=>raw(p,'POST',JSON.stringify(b),{'content-type':'application/json'},auth);
   const options=code=>post('/api/register/options',{name:'Phase 6 synthetic owner',code},false);
@@ -206,4 +207,97 @@ test('secret configuration rejects missing, weak, reused or nonlocal values',()=
   assert.ok(config(env).setupDigest);
   for(const bad of [{AUTH_SECRET:''},{SETUP_CODE:''},{AUTH_SECRET:'a'.repeat(64)},{SETUP_CODE:env.AUTH_SECRET},{API_ORIGIN:'https://external.invalid',RP_ID:'external.invalid'}])assert.throws(()=>config({...env,...bad}));
   console.log('PHASE6_SECRET_CONFIGURATION_FAIL_CLOSED PASS');
+});
+
+test('segmented restore reads authenticated objects before bounded HTTP streaming, reconciles interruption and rejects unsupported capabilities',{timeout:240000},async()=>{
+  let source,target,dir;const key=randomBytes(32);
+  try{
+    dir=await mkdtemp(join(tmpdir(),'opengym-p6-stream-restore-'));const path=join(dir,'backup');
+    source=await worker();target=await worker();await source.runner.start();const owner=await source.register();
+    const large=row(wav(30*22050),'audio/wav');
+    const sourceRows=[photo,large];
+    for(const f of sourceRows)await source.json(await source.put(f),201);
+    await source.json(await source.save(state,await source.read()));const original=await source.read();
+    const verified=[];for(const f of sourceRows)verified.push(await source.get(f));
+    const manifest={...snapshot(owner,original),files:verified.map(({bytes,...meta})=>meta)};
+    const backup=await persistRecoveryBundle(path,manifest,key,owner,async function*(meta){
+      const bytes=Buffer.from(verified.find(r=>r.hash===meta.hash).bytes,'base64');
+      try{for(let i=0;i<bytes.length;i+=1024*1024)yield bytes.subarray(i,i+1024*1024);}finally{bytes.fill(0);}
+    });
+    await source.current(original);await source.runner.stop();
+    await target.runner.start();const dest=await target.register();assert.notEqual(dest,owner);
+    const empty=await target.read();assert.equal(empty.rev,0);assert.equal(empty.state,null);
+    const plan=await verifyRecoveryBundle(path,key,owner);assert.equal(plan.manifestDigest,backup.manifestDigest);
+    assert.equal(plan.quota.withinKnownMediaLimits,true);assert.deepEqual(plan.quota.missingServerReferences,[]);
+    const hashes=plan.manifest.files.map(f=>f.hash);
+    const usage=await target.json(await target.usage(hashes));
+    assert.deepEqual(usage.missing,hashes);assert.equal(usage.usage.count,0);assert.equal(usage.usage.bytes,0);
+    const upload=async hash=>{
+      await target.current(empty);
+      const {row:meta,bytes}=await readVerifiedRestoreObject(path,key,owner,plan.manifestDigest,hash);
+      let offset=0;
+      const stream=new ReadableStream({pull(controller){
+        if(offset===bytes.length){controller.close();return;}
+        const end=Math.min(offset+64*1024,bytes.length);controller.enqueue(bytes.subarray(offset,end));offset=end;
+      }});
+      try{return await target.json(await target.raw('/api/media/'+hash,'PUT',stream,{'content-type':meta.mime,'x-opengym-account':dest}),201);}
+      finally{bytes.fill(0);}
+    };
+    // Stop after the first write, before state publication; reconcile by exact
+    // readback, not retrying the write or trusting a client acknowledgement.
+    await upload(hashes[0]);await target.runner.stop();await target.runner.start();await target.current(empty);
+    const partial=await target.json(await target.usage(hashes));assert.deepEqual(partial.missing,[hashes[1]]);
+    assert.deepEqual(await target.get(sourceRows[0]),sourceRows[0]);
+    // An archive that was verified earlier can still change. Refuse it before
+    // any second PUT, keep the destination state empty and first object intact.
+    const object=join(path,hashes[1]+'.enc'),originalCipher=await readFile(object);
+    const damaged=Buffer.from(originalCipher);damaged[damaged.length-1]^=1;await writeFile(object,damaged);
+    await assert.rejects(upload(hashes[1]),/authentication failed/);
+    await target.current(empty);assert.deepEqual((await target.json(await target.usage(hashes))).missing,[hashes[1]]);
+    await writeFile(object,originalCipher);
+    assert.equal((await verifyRecoveryBundle(path,key,owner)).manifestDigest,plan.manifestDigest);
+    await upload(hashes[1]);for(const f of sourceRows)assert.deepEqual(await target.get(f),f);
+    const complete=await target.json(await target.usage(hashes));assert.deepEqual(complete.missing,[]);
+    assert.equal(complete.usage.bytes,plan.quota.serverBytes);assert.equal(complete.usage.count,plan.quota.serverCount);
+    await target.current(empty);
+    const doc=structuredClone(plan.manifest.snapshots[0].state);for(const k of ['_rev','_wid','_wids'])delete doc[k];
+    await target.json(await target.save(doc,empty));const restored=await target.read();
+    for(const k of ['workouts','routines','customEx','notes'])assert.deepEqual(restored.state[k],original.state[k],k);
+    assert.equal((await target.save({workouts:[],routines:[]},empty)).status,409);
+    await target.current(restored);await target.runner.stop();await target.runner.start();await target.current(restored);
+    for(const f of sourceRows)assert.deepEqual(await target.get(f),f);
+    await source.runner.start();await source.current(original);for(const f of sourceRows)assert.deepEqual(await source.get(f),f);
+    assert.equal((await verifyRecoveryBundle(path,key,owner)).manifestDigest,plan.manifestDigest);
+    console.log('PHASE6_SEGMENTED_HTTP_RESTORE_INTERRUPTION PASS');
+    // Representative unsupported upstream route families, plus no live backup
+    // or restore endpoint. Exact JSON 404, never SPA HTML or successful fallback.
+    const deferred=[
+      ['POST','/api/login/password'],['GET','/api/oidc/start'],['POST','/api/watch/redeem'],
+      ['GET','/api/tokens'],['GET','/api/calendar'],['GET','/api/push/status'],
+      ['GET','/api/integrations'],['GET','/api/coach/status'],['GET','/api/shared'],
+      ['GET','/api/sharing'],['GET','/api/trainer'],['GET','/api/gym'],
+      ['GET','/api/admin/users'],['POST','/api/oauth/token'],
+      ['GET','/.well-known/openid-configuration'],['POST','/mcp'],
+      ['GET','/api/backup'],['POST','/api/restore'],['POST','/api/media/purge']
+    ];
+    for(const [method,p] of deferred){
+      for(const auth of [false,true]){
+        const res=await target.raw(p,method,method==='POST'?'{}':undefined,{'content-type':'application/json',accept:'text/html'},auth);
+        assert.equal(res.status,404,method+' '+p);
+        assert.match(res.headers.get('content-type')||'',/application\/json/);
+        assert.equal(res.headers.get('cache-control'),'no-store');await res.arrayBuffer();
+      }
+    }
+    const anonymous=await target.json(await target.raw('/api/config','GET',undefined,{},false));
+    assert.deepEqual(anonymous,{invite_only:true,allow_guest:false,signed_in:false});
+    const signed=await target.json(await target.raw('/api/config'));
+    assert.deepEqual(Object.keys(signed).sort(),['allow_guest','coach','invite_only','media','signed_in']);
+    assert.equal(signed.coach,null);assert.equal(signed.invite_only,true);assert.equal(signed.allow_guest,false);assert.equal(signed.signed_in,true);
+    const privateRes=await target.raw('/api/media/'+hashes[0]);assert.equal(privateRes.status,200);
+    assert.equal(privateRes.headers.get('cache-control'),'private, no-store');
+    assert.equal(privateRes.headers.get('cross-origin-resource-policy'),'same-origin');await privateRes.arrayBuffer();
+    assert.equal((await target.raw('/api/media/'+hashes[0],'GET',undefined,{},false)).status,401);
+    await target.current(restored);
+    console.log('PHASE6_PRIVACY_UNSUPPORTED_ROUTE_MATRIX PASS');
+  }finally{key.fill(0);if(source)await source.runner.cleanup();if(target)await target.runner.cleanup();if(dir)await rm(dir,{recursive:true,force:true});}
 });
