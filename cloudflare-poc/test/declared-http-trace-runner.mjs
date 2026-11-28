@@ -5,6 +5,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createServer } from 'node:net';
 import { setTimeout as sleep } from 'node:timers/promises';
+import { classifyDeliveryError } from './delivery-error-class.mjs';
 
 export async function traceRunner(config='wrangler.jsonc',opts={}) {
   const dir = await mkdtemp(join(tmpdir(), 'opengym-poc-'));
@@ -53,7 +54,7 @@ export async function traceRunner(config='wrangler.jsonc',opts={}) {
       await exited;
     }
   }
-  return { start, stop, call, base, origin, dir, traceSummary(){
+  return { start, stop, call, base, origin, dir, deliveryClasses(){return classifyDeliveryError(log)}, controlSummary(){return [...log.matchAll(/P7CONTROL:(early|drain):return:413/g)].map(m=>m[1])}, traceSummary(){
     // Only fixed marker grammar is exposed, never raw Wrangler logs.
     const events=[...log.matchAll(/P7TRACE:(OUTER|DO):(entry|return|throw)(?::([1-5][0-9][0-9]))?/g)].map(m=>({layer:m[1],event:m[2],...(m[3]?{status:Number(m[3])}:{})}));
     return events.slice(-32);

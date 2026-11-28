@@ -141,3 +141,13 @@ describe('media store (memory backend)', () => {
     expect(await s.has(H1)).toBe(true)
   })
 })
+
+it('Phase 7: guarded eviction observes pending transition after stale list snapshot', async () => {
+  const store = createMediaStore(memoryBackend())
+  await store.put(H1, new Blob(['original']), { mime: 'image/webp', pending: false })
+  const snapshot = (await store.list())[0]
+  expect(snapshot.pending).toBe(false)
+  await store.markOwed(H1)
+  expect(await store.removeIf(H1, rec => !rec.pending && !rec.rejected)).toBeNull()
+  expect(await (await store.get(H1)).blob.text()).toBe('original')
+})

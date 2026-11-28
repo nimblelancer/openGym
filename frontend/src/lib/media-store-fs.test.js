@@ -145,7 +145,37 @@ it('Phase 7: native index write failure does not report durable owed success; re
   }
   await expect(store.markOwed(hash)).rejects.toThrow('synthetic index failure')
   expect(store.pendingNow().has(hash)).toBe(true)
+  // Cold restart BEFORE successful retry: the owed sidecar protects the
+  // original even though the old index still says pending=false.
+  const cold = createMediaStore(fsBackend(fs.deps))
+  expect([...await cold.pendingHashes()]).toEqual([hash])
+  expect(await sha256Hex(new Uint8Array(await (await cold.get(hash)).blob.arrayBuffer()))).toBe(hash)
   mod.Filesystem.writeFile = originalWrite
   await store.markOwed(hash)
   expect([...await createMediaStore(fsBackend(fs.deps)).pendingHashes()]).toEqual([hash])
+})
+
+it('Phase 7: clear the owed marker only after durable ACK; cold reopen stays owed on failed ACK index write', async () => {
+  const fs = fakeFs()
+  const mod = await fs.deps.load()
+  const backend = fsBackend(fs.deps)
+  const store = createMediaStore(backend)
+  const bytes = jpeg(), hash = await sha256Hex(bytes)
+  await store.put(hash, new Blob([bytes]), { mime: 'image/jpeg', pending: false })
+  await backend.flush()
+  await store.markOwed(hash)
+  const marker = 'opengym-media/' + hash + '.owed'
+  expect(fs.files.has(marker)).toBe(true)
+  const originalWrite = mod.Filesystem.writeFile
+  mod.Filesystem.writeFile = async opts => {
+    if (opts.path.endsWith('index.json')) throw new Error('synthetic ACK failure')
+    return originalWrite(opts)
+  }
+  await expect(store.markSynced(hash)).rejects.toThrow('synthetic ACK failure')
+  expect(store.pendingNow().has(hash)).toBe(true)
+  expect(fs.files.has(marker)).toBe(true)
+  mod.Filesystem.writeFile = originalWrite
+  await store.markSynced(hash)
+  expect(fs.files.has(marker)).toBe(false)
+  expect([...await createMediaStore(fsBackend(fs.deps)).pendingHashes()]).toEqual([])
 })

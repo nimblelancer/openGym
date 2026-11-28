@@ -307,6 +307,15 @@ jobs:
           /usr/bin/time -v -o reports/integrated-boundary-trace-process-profile.txt node --test --test-concurrency=1 test/declared-http.test.mjs || status=$?
           cat reports/integrated-boundary-trace-process-profile.txt
           exit "$status"
+      - name: Phase 7 local synthetic response delivery controls
+        if: always()
+        working-directory: cloudflare-poc
+        run: |
+          mkdir -p reports
+          status=0
+          /usr/bin/time -v -o reports/integrated-delivery-control-process-profile.txt node --test --test-concurrency=1 test/delivery-control.test.mjs || status=$?
+          cat reports/integrated-delivery-control-process-profile.txt
+          exit "$status"
       - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f
         if: always()
         with:
@@ -314,5 +323,6 @@ jobs:
           path: |
             cloudflare-poc/reports/integrated-safety-process-profile.txt
             cloudflare-poc/reports/integrated-boundary-trace-process-profile.txt
+            cloudflare-poc/reports/integrated-delivery-control-process-profile.txt
           if-no-files-found: error
           retention-days: 7

@@ -27,6 +27,7 @@ import { sha256Hex } from './sha256.js'
 
 const DIR = 'opengym-media'
 const INDEX = DIR + '/index.json'
+const owedName = h => DIR + '/' + h + '.owed'
 const CHUNK = 3 * 1024 * 1024   // a multiple of 3, so no piece but the last has base64 padding
 const FILE_RE = /^([0-9a-f]{64})\.(jpg|png|webp|gif|mp4|webm|wav)$/
 
@@ -97,12 +98,17 @@ export function fsBackend({
       try {
         const r = await FS.readdir(opts(DIR))
         names = (r.files || []).map(f => (typeof f === 'string' ? f : f?.name)).filter(Boolean)
-      } catch { names = [] }
+      } catch { return false } // do not rewrite an index from an unreadable directory
       const present = new Set(names)
       let changed = false
       // Entries whose file is gone: the file was never renamed into place, or was deleted.
       for (const [h, r] of Object.entries(recs)) {
         if (!r || !MEDIA_MIMES[r.mime] || !present.has(fileName(h, r.mime))) { delete recs[h]; changed = true }
+      }
+      // A durable owed marker overrides a stale index after a failed write or
+      // crash. It contains no media bytes or identity; its filename is the hash.
+      for (const [h, r] of Object.entries(recs)) {
+        if (present.has(h + '.owed')) { r.pending = true; changed = true }
       }
       for (const name of names) {
         if (name.endsWith('.part')) { FS.deleteFile(opts(DIR + '/' + name)).catch(() => {}); continue }
@@ -149,11 +155,19 @@ export function fsBackend({
     async patch(h, fields) {
       if (!recs[h]) return
       recs[h] = { ...recs[h], ...fields }
-      if (fields.pending === true) {
-        // Owed metadata must reach the native index before reporting success.
+      if (typeof fields.pending === 'boolean') {
         clearTimeout(writeTm)
         writeTm = null
+        // The marker is written first; if index publication fails, a cold
+        // reopen still treats the original as owed. A failed marker write
+        // remains an error, not evidence of durable preservation.
+        if (fields.pending) await FS.writeFile({ ...opts(owedName(h)), data: '1', encoding: Encoding.UTF8, recursive: true })
         await saveIndex(true)
+        if (!fields.pending) {
+          // Clear only after durable ACK metadata. Failure conservatively
+          // leaves the marker, so a restart may retry an idempotent upload.
+          try { await FS.deleteFile(opts(owedName(h))) } catch {}
+        }
       } else scheduleIndex()
     },
     async remove(h) {
@@ -166,6 +180,7 @@ export function fsBackend({
       // next start drops. The other order would leave a file without an entry, which that start
       // would take for an unlisted new one and keep.
       try { await FS.deleteFile(opts(DIR + '/' + name)) } catch { /* already gone */ }
+      try { await FS.deleteFile(opts(owedName(h))) } catch {}
       scheduleIndex()
     },
     async clear() {

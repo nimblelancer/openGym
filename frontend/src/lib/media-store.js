@@ -228,6 +228,19 @@ export function createMediaStore(backend, {
       await be.remove(hash).catch(() => {})
       emit()
     },
+    // GC must re-read the live record after ready(), not delete on a stale list.
+    // The guard and removal initiation are synchronous in this store instance.
+    async removeIf(hash, guard) {
+      await ready()
+      const rec = index.get(hash)
+      if (!rec || !guard(rec)) return null
+      revokeNow(hash)
+      index.delete(hash)
+      try { await be.remove(hash) }
+      catch (e) { if (!index.has(hash)) index.set(hash, rec); emit(); throw e }
+      emit()
+      return { ...rec }
+    },
     /** Deletes every record not in `keep`, except those put at or after `keepPutAfter` — a file
      *  picked meanwhile in an editor that is still open, or by another tab. */
     async retainOnly(keep, { keepPutAfter = now() } = {}) {

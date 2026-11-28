@@ -356,6 +356,8 @@ export function createMediaSync(deps = {}) {
       if (!mine()) return
       const st = store.getState()
       const live = keptHashes(st.S)
+      const unchanged = () => mine() && store.getState().S === st.S && store.getState().config === st.config
+      let persisted
       // Stashed, in-progress and device-only refs are not cache candidates,
       // even if their hash also occurs in a remote-uploadable reference.
       const protectedHashes = keptHashes({ active: st.S?.active })
@@ -369,6 +371,7 @@ export function createMediaSync(deps = {}) {
       protectLocal(st.S)
       try {
         const raw = d.storage?.getItem(PERSISTED_KEY)
+        persisted = raw
         if (raw) {
           const saved = JSON.parse(raw)
           for (const h of keptHashes(saved)) live.add(h)
@@ -395,10 +398,30 @@ export function createMediaSync(deps = {}) {
       // A file an open editor holds as its draft is live too, however long the editor has been open.
       const held = r => typeof d.media.isHeld === 'function' && d.media.isHeld(r.hash)
       const cutoff = d.now() - LOCAL_GC_GRACE_MS
+      // Recheck the asynchronously read preservation sources immediately before
+      // removal. A new stash, unreadable mirror, owner or saved-state change
+      // invalidates a GC decision. No cross-process atomicity is claimed.
+      const stillRemovable = async (h, pressure) => {
+        try {
+          if (!unchanged() || d.storage?.getItem(PERSISTED_KEY) !== persisted) return false
+          if (typeof st.stashedMediaHashes === 'function' && (await st.stashedMediaHashes()).has(h)) return false
+          if (d.nativeLoad) {
+            const saved = await d.nativeLoad()
+            if (saved && (keptHashes({ active: saved.active }).has(h) ||
+                stateMediaRefs(saved).some(m => m.local === true && (m.hash === h || m.poster?.hash === h)) ||
+                (!pressure && keptHashes(saved).has(h)))) return false
+          }
+          return unchanged() && d.storage?.getItem(PERSISTED_KEY) === persisted
+        } catch { return false }
+      }
       const all = await d.media.list()
       for (const r of all) {
-        if (!mine()) return
-        if (!live.has(r.hash) && !r.rejected && !held(r) && (r.putAt || 0) < cutoff) await d.media.remove(r.hash)
+        if (!unchanged()) return
+        if (!live.has(r.hash) && !r.rejected && !held(r) && (r.putAt || 0) < cutoff &&
+            !(st.config?.media?.resetRequiresVerifiedBackup && r.pending) && await stillRemovable(r.hash, false)) {
+          await d.media.removeIf(r.hash, latest => unchanged() && !latest.rejected && !held(latest) &&
+            !(st.config?.media?.resetRequiresVerifiedBackup && latest.pending) && (latest.putAt || 0) < cutoff)
+        }
       }
       if (!st.user || !mine()) return
       const left = (await d.media.list()).filter(r => live.has(r.hash) || held(r) || (r.putAt || 0) >= cutoff)
@@ -409,7 +432,6 @@ export function createMediaSync(deps = {}) {
       const cfg = st.config?.media
       if (!cfg) return
       const uploadable = new Set(uploadableFiles(st.S, { sets: !!cfg.sets, sounds: !!cfg.sounds, avatar: !!cfg.avatar }).map(f => f.hash))
-      const unchanged = () => mine() && store.getState().S === st.S && store.getState().config === st.config
       const candidates = left
         .filter(r => !r.pending && !r.rejected && uploadable.has(r.hash) && !protectedHashes.has(r.hash) && !posters.has(r.hash) && !held(r) && (r.putAt || 0) < cutoff)
         .sort((a, b) => (a.shownAt || 0) - (b.shownAt || 0))
@@ -429,11 +451,10 @@ export function createMediaSync(deps = {}) {
         for (const h of chunk) {
           if (!unchanged() || bytes <= LOCAL_CACHE_MAX_MB * MB) return
           if (missing.has(h)) continue
-          const rec = (await d.media.list()).find(r => r.hash === h)
-          if (!unchanged()) return
-          if (!rec || rec.pending || rec.rejected || held(rec) || (rec.putAt || 0) >= cutoff) continue
-          await d.media.remove(h)
-          bytes -= rec.size || 0
+          if (!await stillRemovable(h, true)) continue
+          const removed = await d.media.removeIf(h, rec => unchanged() &&
+            !rec.pending && !rec.rejected && !held(rec) && (rec.putAt || 0) < cutoff)
+          if (removed) bytes -= removed.size || 0
         }
       }
     })

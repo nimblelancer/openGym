@@ -11,6 +11,7 @@ import {MediaLifecycle,GRACE_MS,DELETE_BATCH} from '../src/media-lifecycle.js';
 import {auditMigrationMedia} from '../src/migration-media-preflight.js';
 import {localRunner} from './local-runner.mjs';
 import {traceRunner} from './declared-http-trace-runner.mjs';
+import {classifyDeliveryError} from './delivery-error-class.mjs';
 const tracing=process.env.P7_BOUNDARY_TRACE==='1';
 import {authenticator} from './auth-fixture.mjs';
 import {inspect,parseRange,boundedBytes,readMediaJson,handleMedia,inventory} from '../src/media.js';
@@ -57,6 +58,7 @@ test('Phase 7 original declared-length HTTP rejection after independent restore'
         const safe={outcome,status,type,wallMarker,offeredBytes:offset,responseBytes:received,
           code:body?.code==='media-too-large'?'media-too-large':null};
         console.log('PHASE7_DECLARED_HTTP_OBSERVATION',JSON.stringify(safe));
+        if(tracing&&outcome==='non-json-response') console.log('PHASE7_DELIVERY_ERROR_CLASS',JSON.stringify(classifyDeliveryError(Buffer.concat(chunks).toString('utf8'))));
         resolve({...safe,body});
       };
       const req=request(runner.base+'/api/media/'+h,{method:'PUT',agent:false,headers:{connection:'close',origin:runner.origin,cookie,'content-type':m,'content-length':b.length,'x-opengym-account':owner}},res=>{
@@ -257,5 +259,5 @@ test('Phase 7 original declared-length HTTP rejection after independent restore'
     console.log('PHASE7_OVERSIZED_ENCRYPTED_BACKUP_PRESERVED PASS');
     console.log('PHASE7_ENCRYPTED_DISK_BACKUP_RESTORE PASS');
     console.log('PHASE7_DESTINATION_OWNER_REVISION_PREFLIGHT PASS');
-  }finally{key.fill(0);if(tracing){await sleep(250);console.log('PHASE7_BOUNDARY_TRACE',JSON.stringify(target.runner.traceSummary()));}await source.runner.cleanup();await target.runner.cleanup();await rm(backupDir,{recursive:true,force:true});}
+  }finally{key.fill(0);if(tracing){await sleep(250);console.log('PHASE7_BOUNDARY_TRACE',JSON.stringify(target.runner.traceSummary()));console.log('PHASE7_DELIVERY_LOG_CLASS',JSON.stringify(target.runner.deliveryClasses()));}await source.runner.cleanup();await target.runner.cleanup();await rm(backupDir,{recursive:true,force:true});}
 });
